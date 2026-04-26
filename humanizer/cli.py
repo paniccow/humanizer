@@ -95,6 +95,19 @@ def detect(
     console.print(table)
 
 
+@app.command()
+def patterns(
+    text: Optional[str] = typer.Argument(None),
+    file: Optional[Path] = typer.Option(None, "-f", "--file"),
+):
+    """Show the AI-pattern fingerprint for a piece of text — explains *why* it reads as AI."""
+    src = _read_input(text, file)
+    from .patterns import analyze
+
+    fp = analyze(src)
+    console.print(fp.explain())
+
+
 @app.command(name="eval")
 def eval_cmd(
     file: Path = typer.Option(..., "-f", "--file", help="JSONL with `source` field"),

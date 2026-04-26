@@ -38,6 +38,9 @@ _LAZY: dict[str, tuple[str, str]] = {
     # postprocess
     "apply_burstiness": (".postprocess", "apply_burstiness"),
     "BurstinessConfig": (".postprocess", "BurstinessConfig"),
+    # patterns
+    "Fingerprint": (".patterns", "Fingerprint"),
+    "analyze_patterns": (".patterns", "analyze"),
     # eval
     "evaluate": (".eval", "evaluate"),
     "EvalReport": (".eval", "EvalReport"),
