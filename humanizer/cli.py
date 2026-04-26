@@ -1,0 +1,147 @@
+"""Command-line entry point.
+
+  humanizer humanize "Some AI text..."         # zero-shot LLM via prompt
+  humanizer humanize -f input.txt --adversarial  # best-of-N with detector ensemble
+  humanizer detect "Is this AI?"               # run the detector ensemble
+  humanizer eval -f sources.jsonl              # full evaluation report
+  humanizer prepare-data -n 200                # build dataset, print summary
+"""
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+from typing import Optional
+
+import typer
+from rich.console import Console
+from rich.table import Table
+
+app = typer.Typer(add_completion=False, help="Humanize AI-generated text.")
+console = Console()
+
+
+def _read_input(text: Optional[str], file: Optional[Path]) -> str:
+    if file:
+        return file.read_text()
+    if text:
+        return text
+    if not sys.stdin.isatty():
+        return sys.stdin.read()
+    raise typer.BadParameter("Provide TEXT or --file or pipe stdin.")
+
+
+@app.command()
+def humanize(
+    text: Optional[str] = typer.Argument(None),
+    file: Optional[Path] = typer.Option(None, "-f", "--file"),
+    model: str = typer.Option("gpt-4o-mini", "--model"),
+    base_url: Optional[str] = typer.Option(None, "--base-url"),
+    adversarial: bool = typer.Option(False, "--adversarial", "-a"),
+    n: int = typer.Option(8, "-n", help="Best-of-N candidates (adversarial only)"),
+    sim_threshold: float = typer.Option(0.78, "--sim"),
+    lite: bool = typer.Option(False, "--lite", help="Use single small detector (CPU/Mac)"),
+    apply_burst: bool = typer.Option(False, "--burst", help="Apply burstiness post-processing"),
+):
+    """Humanize text. Default = single-shot prompt; --adversarial = best-of-N."""
+    src = _read_input(text, file)
+
+    from .humanizers import (
+        AdversarialConfig,
+        AdversarialHumanizer,
+        PromptHumanizer,
+        PromptHumanizerConfig,
+    )
+
+    base = PromptHumanizer(PromptHumanizerConfig(model=model, base_url=base_url))
+    if adversarial:
+        from .detectors import default_ensemble
+
+        ensemble = default_ensemble(lite=lite)
+        h = AdversarialHumanizer(
+            base, ensemble, AdversarialConfig(n_candidates=n, similarity_threshold=sim_threshold)
+        )
+        result = h.humanize(src)
+        console.print(f"[dim]p_ai={result.score:.3f}  attempts={result.attempts}[/dim]")
+        console.print(f"[dim]similarity={result.metadata['similarity']:.3f}[/dim]\n")
+        out = result.text
+    else:
+        out = base.humanize(src).text
+
+    if apply_burst:
+        from .postprocess import apply_burstiness
+
+        out = apply_burstiness(out)
+
+    console.print(out)
+
+
+@app.command()
+def detect(
+    text: Optional[str] = typer.Argument(None),
+    file: Optional[Path] = typer.Option(None, "-f", "--file"),
+    lite: bool = typer.Option(False, "--lite"),
+):
+    """Run the detector ensemble on a piece of text."""
+    src = _read_input(text, file)
+    from .detectors import default_ensemble
+
+    ensemble = default_ensemble(lite=lite)
+    res = ensemble.score(src)
+    table = Table(title=f"AI-detector ensemble — mean p_ai = {res.aggregate:.3f}")
+    table.add_column("detector"); table.add_column("p_ai", justify="right")
+    for s in res.scores:
+        table.add_row(s.name, f"{s.p_ai:.3f}")
+    console.print(table)
+
+
+@app.command(name="eval")
+def eval_cmd(
+    file: Path = typer.Option(..., "-f", "--file", help="JSONL with `source` field"),
+    model: str = typer.Option("gpt-4o-mini", "--model"),
+    adversarial: bool = typer.Option(True, "--adversarial/--no-adversarial"),
+    n: int = typer.Option(8, "-n"),
+    lite: bool = typer.Option(False, "--lite"),
+    out: Optional[Path] = typer.Option(None, "-o", "--out", help="Save samples JSONL"),
+    no_perp: bool = typer.Option(False, "--no-perp", help="Skip perplexity (faster)"),
+):
+    """Full evaluation: ASR per detector, similarity, perplexity, burstiness."""
+    sources = [json.loads(line)["source"] for line in file.read_text().splitlines() if line.strip()]
+    from .detectors import default_ensemble
+    from .eval import evaluate
+    from .humanizers import (
+        AdversarialConfig,
+        AdversarialHumanizer,
+        PromptHumanizer,
+        PromptHumanizerConfig,
+    )
+
+    base = PromptHumanizer(PromptHumanizerConfig(model=model))
+    ensemble = default_ensemble(lite=lite)
+    humanizer = AdversarialHumanizer(base, ensemble, AdversarialConfig(n_candidates=n)) if adversarial else base
+
+    report = evaluate(humanizer, sources, ensemble, compute_perplexity=not no_perp)
+    console.print(report.summary())
+    if out:
+        out.write_text("\n".join(json.dumps(s) for s in report.samples))
+        console.print(f"\nSamples written to {out}")
+
+
+@app.command(name="prepare-data")
+def prepare_data_cmd(
+    n: int = typer.Option(200, "-n"),
+    out: Optional[Path] = typer.Option(None, "-o", "--out"),
+):
+    """Build the HC3-based training dataset, print/save summary."""
+    from .data import DataConfig, build
+
+    ds = build(DataConfig(n_examples=n))
+    console.print(f"Built dataset with {len(ds)} examples")
+    console.print({k: ds[0][k][:120] + "..." if isinstance(ds[0][k], str) and len(ds[0][k]) > 120 else ds[0][k] for k in ds.column_names})
+    if out:
+        ds.to_json(str(out))
+        console.print(f"Wrote {out}")
+
+
+if __name__ == "__main__":
+    app()

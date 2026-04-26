@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "humanizer"
+version = "0.1.0"
+description = "Humanize AI-generated text — train an LLM with GRPO against an ensemble of AI-text detectors while preserving semantics and quality."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "paniccow" }]
+keywords = ["nlp", "llm", "rlhf", "grpo", "paraphrase", "ai-detection"]
+
+dependencies = [
+    "torch>=2.2",
+    "transformers>=4.45",
+    "accelerate>=0.34",
+    "datasets>=2.20",
+    "sentence-transformers>=3.0",
+    "bert-score>=0.3.13",
+    "nltk>=3.9",
+    "numpy>=1.26",
+    "tqdm>=4.66",
+    "pydantic>=2.7",
+    "typer>=0.12",
+    "rich>=13.7",
+    "scikit-learn>=1.5",
+]
+
+[project.optional-dependencies]
+train = [
+    "trl>=0.11",
+    "peft>=0.13",
+    "bitsandbytes>=0.43; sys_platform != 'darwin'",
+    "wandb>=0.18",
+]
+openai = ["openai>=1.40"]
+dev = ["pytest>=8.0", "ruff>=0.6"]
+
+[project.scripts]
+humanizer = "humanizer.cli:app"
+
+[tool.setuptools.packages.find]
+include = ["humanizer*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
