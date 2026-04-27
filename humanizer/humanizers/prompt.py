@@ -65,7 +65,11 @@ class PromptHumanizer(Humanizer):
         self._client = OpenAI(api_key=api_key, base_url=self.config.base_url)
 
     def _generate(self, text: str, *, n: int = 1) -> list[str]:
-        resp = self._client.chat.completions.create(
+        # Try a single API call with n=N first (cheaper if supported).
+        # Many OpenRouter routes silently return only 1 completion regardless
+        # of the n parameter. If we asked for n>1 and got back fewer, fall
+        # back to N independent calls.
+        params = dict(
             model=self.config.model,
             messages=[
                 {"role": "system", "content": _SYSTEM_PROMPT},
@@ -74,9 +78,16 @@ class PromptHumanizer(Humanizer):
             temperature=self.config.temperature,
             top_p=self.config.top_p,
             max_tokens=self.config.max_output_tokens,
-            n=n,
         )
-        return [c.message.content.strip() for c in resp.choices]
+        first = self._client.chat.completions.create(**params, n=n)
+        outs = [c.message.content.strip() for c in first.choices]
+        if len(outs) >= n or n == 1:
+            return outs
+        # Provider didn't honor n; fan out the rest.
+        for _ in range(n - len(outs)):
+            r = self._client.chat.completions.create(**params)
+            outs.append(r.choices[0].message.content.strip())
+        return outs
 
     def humanize(self, text: str, **_) -> HumanizeResult:
         out = self._generate(text)[0]
