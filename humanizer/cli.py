@@ -142,6 +142,17 @@ def pipeline(
     no_llm: bool = typer.Option(False, "--no-llm", help="Skip LLM stages — scrub + post-process only"),
     lite: bool = typer.Option(False, "--lite", help="Use single small detector"),
     show_trace: bool = typer.Option(False, "--trace", help="Print per-stage trace"),
+    use_reject: bool = typer.Option(
+        False, "--reject",
+        help="Replace best-of-N + refine with rejection sampling against a real-world judge",
+    ),
+    judge: str = typer.Option(
+        "auto", "--judge",
+        help="Used with --reject. auto | gptzero | originality | pangram | roberta",
+    ),
+    reject_n: int = typer.Option(8, "--reject-n", help="Candidates per rejection round"),
+    reject_rounds: int = typer.Option(4, "--reject-rounds", help="Max rejection escalation rounds"),
+    reject_threshold: float = typer.Option(0.05, "--reject-threshold", help="Strict judge pass threshold"),
 ):
     """Full multi-stage humanization pipeline: scrub → paraphrase → best-of-N
     → iterative refine → burstiness → QA gate.
@@ -156,12 +167,21 @@ def pipeline(
     from .pipeline import Pipeline, PipelineConfig
     from .patterns import analyze
 
-    cfg = PipelineConfig(n_candidates=n, max_refine_passes=refine_passes)
+    cfg = PipelineConfig(
+        n_candidates=n,
+        max_refine_passes=refine_passes,
+        do_reject=use_reject,
+        reject_candidates=reject_n,
+        reject_max_rounds=reject_rounds,
+        reject_p_ai_threshold=reject_threshold,
+    )
 
+    judge_det = None
     if no_llm:
         # Scrub + burstiness only — no API key needed.
         cfg.do_paraphrase = False
         cfg.do_refine = False
+        cfg.do_reject = False
         humanizer = None
         ensemble = None
     else:
@@ -169,8 +189,23 @@ def pipeline(
         from .detectors import default_ensemble
         humanizer = PromptHumanizer(PromptHumanizerConfig(model=model, base_url=base_url))
         ensemble = default_ensemble(lite=lite)
+        if use_reject:
+            if judge == "auto":
+                from .detectors import judge_from_env
+                judge_det = judge_from_env()
+            elif judge == "gptzero":
+                from .detectors import GPTZeroDetector; judge_det = GPTZeroDetector()
+            elif judge == "originality":
+                from .detectors import OriginalityDetector; judge_det = OriginalityDetector()
+            elif judge == "pangram":
+                from .detectors import PangramDetector; judge_det = PangramDetector()
+            elif judge == "roberta":
+                from .detectors import RoBERTaDetector
+                judge_det = RoBERTaDetector("roberta-large-openai-detector")
+            else:
+                raise typer.BadParameter(f"--judge {judge!r} not recognized")
 
-    pipe = Pipeline(humanizer=humanizer, detectors=ensemble, config=cfg)
+    pipe = Pipeline(humanizer=humanizer, detectors=ensemble, config=cfg, judge=judge_det)
     result = pipe.run(src)
 
     before_pat = analyze(src).aggregate
@@ -195,8 +230,9 @@ def reject(
     model: str = typer.Option("gpt-4o-mini", "--model"),
     base_url: Optional[str] = typer.Option(None, "--base-url"),
     judge: str = typer.Option(
-        "gptzero", "--judge",
-        help="Judge: gptzero | originality | pangram (paid APIs) or roberta (local, free)",
+        "auto", "--judge",
+        help="Judge: auto (use whatever paid keys are set, fall back to roberta) | "
+             "gptzero | originality | pangram (paid APIs) | roberta (local, free)",
     ),
     n: int = typer.Option(8, "-n", help="Candidates per round"),
     rounds: int = typer.Option(4, "--rounds", help="Max escalation rounds"),
@@ -219,7 +255,18 @@ def reject(
         RejectionSamplingHumanizer,
     )
 
-    if judge == "gptzero":
+    if judge == "auto":
+        from .detectors import available_paid_detectors, judge_from_env
+        avail = [s.name for s in available_paid_detectors()]
+        if avail:
+            console.print(f"[dim]judge=auto -> ensemble({'+'.join(avail)})[/dim]")
+        else:
+            console.print(
+                "[yellow]judge=auto -> roberta-large fallback "
+                "(no paid API keys set; export ORIGINALITY_API_KEY etc. for real-world judging)[/yellow]"
+            )
+        judge_det = judge_from_env()
+    elif judge == "gptzero":
         from .detectors import GPTZeroDetector
         judge_det = GPTZeroDetector()
     elif judge == "originality":
@@ -233,7 +280,7 @@ def reject(
         judge_det = RoBERTaDetector("roberta-large-openai-detector")
     else:
         raise typer.BadParameter(
-            f"--judge must be one of: gptzero, originality, pangram, roberta — got {judge!r}"
+            f"--judge must be one of: auto, gptzero, originality, pangram, roberta — got {judge!r}"
         )
 
     base = PromptHumanizer(PromptHumanizerConfig(model=model, base_url=base_url))

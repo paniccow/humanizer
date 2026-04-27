@@ -1,5 +1,72 @@
 # Changelog
 
+## v0.5 — rejection sampling against the live judge (2026-04)
+
+The "money-back guarantee" inference layer. Single-shot ASR was the wrong
+target — what users actually need is per-request reliability, and that's
+what brute-force rejection sampling against the real-world detector gives
+you. If the base humanizer's single-shot pass rate is `p`, best-of-N
+rejection sampling lifts the per-request success rate to `1 - (1-p)^N`.
+With `p = 0.7` and `N = 8`: 99.99%. With `p = 0.5` and `N = 8`: 99.6%.
+
+### `humanizer reject`
+
+  ```
+  humanizer reject TEXT --judge auto -n 8 --rounds 4 --threshold 0.05
+  ```
+
+Sample N candidates → similarity-filter against the source → score each
+through the judge → return on first `p_ai < threshold`. If none pass,
+bump temperature and retry up to `--rounds`. Worst case: `n × rounds`
+generations + judge calls; typical: passes round 1.
+
+### Paid-detector clients (urllib only, no extra deps)
+
+- **GPTZero** — `GPTZERO_API_KEY`. `p_ai = ai + 0.5*mixed`. ($135/mo for
+  1M words.)
+- **Originality.ai** — `ORIGINALITY_API_KEY`. `score.ai`. **9× cheaper
+  than GPTZero** ($14.95/mo for 3M words).
+- **Pangram** — `PANGRAM_API_KEY`. Tolerates 3 response shapes
+  (`ai_likelihood`, `class_probabilities`, predicted-class+confidence).
+
+Turnitin: no public API. Use `roberta-large-openai-detector` as a proxy
+(correlates ~0.7 with Turnitin's signal in academic studies).
+
+### `--judge auto` and `EnsembleJudge`
+
+`humanizer.detectors.judge.judge_from_env()` inspects the operator's env
+and returns whichever paid-detector ensemble is configured (or the local
+RoBERTa-large fallback if none). The CLI's `--judge auto` uses this:
+multi-detector ensemble when ≥2 keys are set, bare detector for 1 key,
+local fallback when 0 keys. Never optimize against a single detector —
+that's how you overfit.
+
+### Pipeline integration
+
+`humanizer pipeline --reject --judge auto` swaps the best-of-N + refine
+stages for the rejection sampler, keeping scrub + burstiness + QA gate
+around it.
+
+### Tests
+
+55 → 82 tests:
+- 7 rejection-sampler tests (accept / escalate / exhaust / similarity-
+  filter / temperature-ramp / telemetry).
+- 15 paid-detector tests (response-parsing for all 3 APIs, including
+  legacy schemas, mixed-class weighting, auth-failure surfaces).
+- 9 judge-factory tests (ensemble aggregation, env-var inspection,
+  prefer/fallback paths, integration with rejection sampler).
+
+### Architecture notes
+
+- All paid-detector clients use only `urllib` from the stdlib — no
+  `requests` dependency. Tests stub `urllib.request.urlopen` at the
+  module level (no network).
+- `RejectionSamplingHumanizer` defers the `embedding_similarity` import
+  via a wrapper so the module imports clean without torch.
+- `EnsembleJudge` adapts a `DetectorEnsemble` to the single-detector
+  `Detector` contract, returning the weighted aggregate `p_ai`.
+
 ## v0.4 — pipeline maturity (2026-04)
 
 The system's deliverable shifted from "trained adapter" to "multi-stage

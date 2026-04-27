@@ -16,6 +16,9 @@ _LAZY = {
     "OriginalityConfig": (".originality", "OriginalityConfig"),
     "PangramDetector": (".pangram", "PangramDetector"),
     "PangramConfig": (".pangram", "PangramConfig"),
+    "EnsembleJudge": (".judge", "EnsembleJudge"),
+    "judge_from_env": (".judge", "judge_from_env"),
+    "available_paid_detectors": (".judge", "available_paid_detectors"),
 }
 
 __all__ = [
@@ -25,6 +28,7 @@ __all__ = [
     "GPTZeroDetector", "GPTZeroConfig",
     "OriginalityDetector", "OriginalityConfig",
     "PangramDetector", "PangramConfig",
+    "EnsembleJudge", "judge_from_env", "available_paid_detectors",
 ]
 
 

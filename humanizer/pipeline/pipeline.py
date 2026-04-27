@@ -32,8 +32,15 @@ class PipelineConfig:
     do_paraphrase: bool = True
     do_select: bool = True               # best-of-N
     do_refine: bool = True               # iterate paraphrase+select
+    do_reject: bool = False              # if True, replace paraphrase+select+refine
+                                         #   with rejection sampling against `judge`
     do_burstiness: bool = True
     do_qa_gate: bool = True              # abort to prior best on similarity collapse
+
+    # Rejection-sampling knobs (used when do_reject=True)
+    reject_candidates: int = 8
+    reject_max_rounds: int = 4
+    reject_p_ai_threshold: float = 0.05
 
     # Best-of-N + refinement knobs
     n_candidates: int = 16               # bumped from 8 — costs more API calls but typically -0.05 p_ai
@@ -85,10 +92,12 @@ class Pipeline:
         humanizer: Humanizer | None = None,
         detectors: Any | None = None,         # DetectorEnsemble; loosely typed to avoid eager import
         config: PipelineConfig | None = None,
+        judge: Any | None = None,             # single Detector used by do_reject mode
     ):
         self.humanizer = humanizer
         self.detectors = detectors
         self.config = config or PipelineConfig()
+        self.judge = judge
 
     # ---- main ------------------------------------------------------------
 
@@ -99,7 +108,9 @@ class Pipeline:
 
         if cfg.do_scrub:
             text = self._stage_scrub(text, result)
-        if cfg.do_paraphrase and self.humanizer is not None:
+        if cfg.do_reject and self.humanizer is not None and self.judge is not None:
+            text = self._stage_reject(text, original, result)
+        elif cfg.do_paraphrase and self.humanizer is not None:
             text = self._stage_paraphrase_and_select(text, original, result)
             if cfg.do_refine:
                 text = self._stage_refine(text, original, result)
@@ -124,6 +135,42 @@ class Pipeline:
             metadata={"edits": sr.edits, "by_kind": sr.edits_by_kind},
         ))
         return sr.text
+
+    def _stage_reject(self, text: str, original: str, result: PipelineResult) -> str:
+        """Replace paraphrase+select+refine with rejection sampling against
+        a real-world judge. Used when the operator has paid-detector keys
+        and wants strict pass-or-keep-trying semantics."""
+        from ..humanizers.rejection import (
+            RejectionConfig, RejectionSamplingHumanizer,
+        )
+
+        cfg = self.config
+        rej = RejectionSamplingHumanizer(
+            self.humanizer,
+            self.judge,
+            RejectionConfig(
+                candidates_per_round=cfg.reject_candidates,
+                max_rounds=cfg.reject_max_rounds,
+                p_ai_threshold=cfg.reject_p_ai_threshold,
+                similarity_threshold=cfg.similarity_threshold,
+            ),
+        )
+        before = text
+        out = rej.humanize(original)  # rejection sampler operates on the source, not scrubbed text
+        result.stages.append(StageTrace(
+            name="reject",
+            text_before=before,
+            text_after=out.text,
+            metadata={
+                "passed": out.metadata.get("passed", False),
+                "rounds_used": out.metadata.get("rounds_used"),
+                "judge": out.metadata.get("judge"),
+                "judge_calls": out.metadata.get("judge_calls"),
+                "best_p_ai": out.metadata.get("best_p_ai"),
+                "attempts": out.attempts,
+            },
+        ))
+        return out.text
 
     def _stage_paraphrase_and_select(self, text: str, original: str, result: PipelineResult) -> str:
         before = text

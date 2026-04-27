@@ -42,10 +42,13 @@ everything above.
 | **Multi-stage pipeline** | `humanizer/pipeline/pipeline.py` | yes. `scrub → paraphrase → best-of-N → iterative refine → burstiness → QA gate`. Each stage independently toggleable. |
 | **Open-source AI-text detectors** + ensemble | `humanizer/detectors/` | yes. RoBERTa-base/large OpenAI, Desklib DeBERTa, Binoculars zero-shot, held-out factory. |
 | **Adversarial best-of-N** humanizer | `humanizer/humanizers/adversarial.py` | yes — needs API/local LLM |
+| **Rejection-sampling humanizer** (best-of-N vs *live* judge) | `humanizer/humanizers/rejection.py` | yes — needs API/local LLM. Best-of-N + temperature ramp + strict pass threshold. |
+| **Paid-detector clients** (GPTZero / Originality.ai / Pangram) | `humanizer/detectors/{gptzero,originality,pangram}.py` | needs API key |
+| **Judge factory** (`judge_from_env` + `EnsembleJudge`) | `humanizer/detectors/judge.py` | yes |
 | **Burstiness post-processor** | `humanizer/postprocess/` | yes |
 | **Trained policy loader** (LoRA adapter) | `humanizer/humanizers/trained.py` | needs adapter; per FINDINGS, BASE outperforms across all 4 runs |
 | **GRPO training stack on rented 4090s** | `cloud/` (TypeScript orchestration + Python inner loop) | needs RunPod account |
-| **CLI** | `humanizer/cli.py` | `humanize / detect / scrub / patterns / pipeline / eval / prepare-data` |
+| **CLI** | `humanizer/cli.py` | `humanize / detect / scrub / patterns / pipeline / reject / eval / prepare-data` |
 
 ## Quick start (no training, no API key)
 
@@ -65,7 +68,43 @@ humanizer pipeline -f input.txt --no-llm
 
 # Full pipeline with an LLM (needs OPENAI_API_KEY)
 humanizer pipeline -f input.txt --model gpt-4o-mini -n 16
+
+# Rejection sampling against the real-world judge (best-of-N until pass)
+export ORIGINALITY_API_KEY=...   # or GPTZERO_API_KEY / PANGRAM_API_KEY
+humanizer reject -f input.txt --judge auto -n 8 --rounds 4 --threshold 0.05
 ```
+
+## Rejection sampling — the real-world reliability layer
+
+Single-shot detector evasion plateaus around 70-90% even with a well-
+trained model. What users want is per-request reliability. Rejection
+sampling against the actual paid detector is how commercial humanizers
+hit their numbers — not magic models, brute-force best-of-N against an
+API. The math:
+
+```
+P(pass) = 1 - (1 - p)^N
+```
+
+| Single-shot p | Best-of-8 reliability | Best-of-16 |
+|---:|---:|---:|
+| 30% | 94.2% | 99.7% |
+| 50% | 99.6% | 99.998% |
+| 70% | **99.992%** | **99.99999%** |
+
+`humanizer reject` does this for you: sample N → similarity-filter →
+score each through the judge → return on first below-threshold. If
+none pass, ramp temperature and retry. With `--judge auto` it picks up
+whichever paid keys you have set and ensembles them; with no keys set
+it falls back to the local RoBERTa-large open detector.
+
+Cost with Originality.ai ($14.95/mo / 3M words):
+- Typical (passes round 1): ~3¢ per humanization.
+- Worst case (4 rounds × 8 candidates): ~13¢.
+
+Turnitin has no public API. Use `--judge roberta` as a proxy
+(RoBERTa-large-openai correlates ~0.7 with Turnitin's signal in
+academic studies; spot-check via institutional access).
 
 ## Architecture
 
