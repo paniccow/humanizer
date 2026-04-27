@@ -25,6 +25,9 @@ from ..metrics.burstiness import split_sentences
 # across blog, essay, and answer-style text.
 AI_FAVORITE_WORDS: frozenset[str] = frozenset(
     {
+        # Archaic-formal markers (essentially never in casual human prose)
+        "whereby", "therein", "hereby", "thereof", "thereto",
+        "henceforth", "hitherto", "wherein", "whereupon",
         # Verbs
         "delve", "delves", "delved", "delving",
         "leverage", "leverages", "leveraged", "leveraging",
@@ -82,6 +85,17 @@ AI_HEDGING_PHRASES: tuple[str, ...] = (
     "in the realm of",
     "when it comes to",
     "at the end of the day",
+    "it's worth mentioning",
+    "it is worth mentioning",
+    "it bears repeating",
+    "it's important to remember",
+    "it is important to remember",
+    "needless to say",
+    "as previously mentioned",
+    "as we delve",
+    "in the grand scheme",
+    "with that being said",
+    "that being said",
 )
 
 _CONTRACTIONS_RE = re.compile(

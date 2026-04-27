@@ -56,6 +56,16 @@ _TRANSITIONS_SOFT = {
 }
 
 _FAVORITE_WORDS = {
+    # Archaic-formal markers — humans almost never use these in casual prose.
+    r"\bwhereby\b": "where",
+    r"\btherein\b": "in it",
+    r"\bhereby\b": "now",
+    r"\bthereof\b": "of it",
+    r"\bthereto\b": "to it",
+    r"\bhenceforth\b": "from now on",
+    r"\bhitherto\b": "until now",
+    r"\bwherein\b": "where",
+    r"\bwhereupon\b": "and then",
     # AI-overused → plain alternatives. Word-boundary replacement, case-preserving.
     r"\bdelve into\b": "look at",
     r"\bdelve\b": "explore",
@@ -134,7 +144,18 @@ _HEDGING_DROP = (
     "the bottom line is that ",
     "at the end of the day, ",
     "needless to say, ",
+    "needless to say ",
     "it goes without saying that ",
+    "it's worth mentioning that ",
+    "it is worth mentioning that ",
+    "it bears repeating that ",
+    "it's important to remember that ",
+    "it is important to remember that ",
+    "as previously mentioned, ",
+    "as we delve into ",
+    "in the grand scheme of things, ",
+    "with that being said, ",
+    "that being said, ",
     # Parenthetical AI hedges
     "(in many cases) ",
     "(if you will) ",
