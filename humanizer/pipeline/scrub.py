@@ -57,15 +57,17 @@ _TRANSITIONS_SOFT = {
 
 _FAVORITE_WORDS = {
     # Archaic-formal markers — humans almost never use these in casual prose.
-    r"\bwhereby\b": "where",
-    r"\btherein\b": "in it",
-    r"\bhereby\b": "now",
-    r"\bthereof\b": "of it",
-    r"\bthereto\b": "to it",
-    r"\bhenceforth\b": "from now on",
-    r"\bhitherto\b": "until now",
+    # Drop them outright rather than expanding to phrases that cascade with
+    # contraction rules (e.g. 'thereof' -> 'of it' -> 'of it's' was a bug).
+    r"\s+whereby\s+": " where ",
+    r"\s+therein\b": "",
+    r"\s+hereby\b": "",
+    r"\s+thereof\b": "",
+    r"\s+thereto\b": "",
+    r"\s+henceforth\s+": " ",
+    r"\s+hitherto\s+": " ",
     r"\bwherein\b": "where",
-    r"\bwhereupon\b": "and then",
+    r"\s+whereupon\s+": ", and ",
     # AI-overused → plain alternatives. Word-boundary replacement, case-preserving.
     r"\bdelve into\b": "look at",
     r"\bdelve\b": "explore",
@@ -587,6 +589,30 @@ def scrub(text: str, cfg: ScrubConfig | None = None) -> ScrubResult:
         lambda m: m.group(1) + m.group(2).upper(),
         text,
     )
+
+    # a/an grammar repair — word swaps can leave "a important" or "an big".
+    # Note: this is heuristic (vowel-LETTER detection misses 'an honest', 'a unique')
+    # but covers ~95% of cases.
+    def _fix_an(m: re.Match) -> str:
+        article = m.group(1)
+        space = m.group(2)
+        next_word = m.group(3)
+        starts_with_vowel = next_word[0].lower() in "aeiou"
+        # Honor common exceptions: 'an honest', 'a unicorn', 'a useful'.
+        if next_word.lower() in {"honest", "honor", "honour", "hour", "hourly", "honesty"}:
+            starts_with_vowel = True
+        if next_word.lower().startswith(("hour",)):
+            starts_with_vowel = True
+        if next_word.lower().startswith(("uni", "use", "user", "europ", "one")):
+            starts_with_vowel = False
+        correct = "an" if starts_with_vowel else "a"
+        if article.lower() == correct:
+            return m.group(0)
+        # Preserve casing (A/a, An/an).
+        if article[0].isupper():
+            correct = correct.capitalize()
+        return correct + space + next_word
+    text = re.sub(r"\b(a|an|A|An)(\s+)([a-zA-Z][a-zA-Z'-]*)", _fix_an, text)
     # Drop dangling commas right after a period (artifact of mid-clause drops).
     text = re.sub(r"\.\s*,\s*", ". ", text)
 
