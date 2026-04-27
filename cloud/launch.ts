@@ -24,7 +24,7 @@ import { provision, terminate } from './provision.ts';
 import { PodConnection } from './ssh.ts';
 import type { TrainResult } from './types.ts';
 
-const TRAIN_PY = resolve(import.meta.dir, 'train.py');
+const TRAIN_PY = resolve(import.meta.dir, process.env.TRAIN_SCRIPT ?? 'train.py');
 const ADAPTER_OUT = resolve(process.cwd(), process.env.ADAPTER_OUT ?? 'adapter');
 const EVAL_OUT = resolve(process.cwd(), 'eval.json');
 
