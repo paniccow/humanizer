@@ -5,3 +5,7 @@ eval.json
 .env
 .env.local
 bun.lockb
+
+# Per-attempt training logs from debug iterations
+training.log
+training.log.attempt*

@@ -100,8 +100,8 @@ export class RunPodClient {
           volumeInGb: this.cfg.volumeInGb,
           volumeMountPath: '/workspace',
           ports: '22/tcp,8000/http',
-          minVcpuCount: 4,
-          minMemoryInGb: 16,
+          minVcpuCount: 2,
+          minMemoryInGb: 8,
           env: [
             { key: 'PUBLIC_KEY', value: opts.publicKey },
             { key: 'JUPYTER_PASSWORD', value: '' }, // disable jupyter

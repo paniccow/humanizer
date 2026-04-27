@@ -1,31 +1,31 @@
-"""GRPO inner loop — runs ON the rented 4090 pod.
+"""GRPO inner loop — hand-rolled, no TRL dependency.
 
-Invoked by launch.ts via SSH after upload. Keeps Python surface area minimal
-so the user only ever touches the TS layer.
+Runs ON the rented 4090 pod. Same algorithm as TRL's GRPOTrainer:
+  loss = -E[ A · log π(y|x) ] + β · KL(π || π_ref)
+  A    = (R(y) - mean(R(group))) / std(R(group))             — group-relative
+  R(y) = 1 - mean(p_ai across detector ensemble)
 
-Recipe (AuthorMist-faithful, scaled to 24GB VRAM):
-  Base    : Qwen2.5-1.5B-Instruct + QLoRA-r16 (≈7M trainable / 1.5B)
-  Reward  : 1 - mean(p_ai) across roberta-base + roberta-large openai-detectors
-  Algo    : TRL GRPOTrainer, G=8, β_KL=0.001, lr=5e-6
-  Steps   : 600 (close to AuthorMist's 714)
-  Data    : 600 prompts streamed from andythetechnerd03/AI-human-text
+Memory trick: instead of loading two copies of the policy, we load Qwen-1.5B
+ONCE with a LoRA adapter on top. For the *policy* logp we forward as normal;
+for the *reference* logp we disable the adapter via `model.disable_adapter()`.
+This halves model VRAM vs naive TRL.
 
-Outputs (under /workspace):
-  /workspace/output/adapter/        — LoRA adapter + tokenizer
+Outputs (under /workspace/output):
+  /workspace/output/adapter/        — LoRA adapter
   /workspace/output/eval.json       — base vs trained on 30 held-out prompts
   /workspace/output/training_log.json
-  /workspace/output/done            — sentinel file (exit code 0 only)
+  /workspace/output/done            — sentinel on success
 """
 from __future__ import annotations
 
 import json
 import os
 import sys
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-# All paths are pod-side absolute, configured by launch.ts via env if needed.
 WORKSPACE = Path(os.environ.get("HUMANIZER_WORKSPACE", "/workspace"))
 OUT = WORKSPACE / "output"
 ADAPTER_DIR = OUT / "adapter"
@@ -48,16 +48,14 @@ class Cfg:
     max_words: int = 200
 
     learning_rate: float = float(os.environ.get("HUMANIZER_LR", 5e-6))
-    beta_kl: float = float(os.environ.get("HUMANIZER_BETA", 0.001))
-    num_generations: int = int(os.environ.get("HUMANIZER_G", 8))
-    max_prompt_length: int = 768
-    max_completion_length: int = 384
-    temperature: float = 0.9
-    per_device_batch: int = 1
-    grad_accum: int = 8
-    epochs: int = 1
+    beta_kl: float = float(os.environ.get("HUMANIZER_BETA", 0.05))
+    num_generations: int = int(os.environ.get("HUMANIZER_G", 4))
+    max_completion_length: int = 200
+    temperature: float = 0.95
+    save_every: int = 50
+
     lora_r: int = int(os.environ.get("HUMANIZER_LORA_R", 16))
-    use_qlora: bool = os.environ.get("HUMANIZER_QLORA", "1") == "1"
+    use_qlora: bool = os.environ.get("HUMANIZER_QLORA", "0") == "1"
 
 
 SYSTEM_PROMPT = (
@@ -78,7 +76,6 @@ def format_prompt(tokenizer, source: str) -> str:
 
 def load_prompts(cfg: Cfg, n: int) -> list[str]:
     from datasets import load_dataset
-
     print(f"[data] streaming {cfg.dataset}...", flush=True)
     ds = load_dataset(cfg.dataset, split="train", streaming=True)
     out: list[str] = []
@@ -98,7 +95,6 @@ def load_prompts(cfg: Cfg, n: int) -> list[str]:
 def load_detectors(cfg: Cfg):
     import torch
     from transformers import AutoModelForSequenceClassification, AutoTokenizer
-
     detectors = []
     for det_id in cfg.detector_ids:
         print(f"[detector] loading {det_id}", flush=True)
@@ -117,35 +113,43 @@ def load_detectors(cfg: Cfg):
     return detectors
 
 
-def make_reward_fn(detectors):
+def detector_p_ai(detectors, texts):
     import torch
-
-    @torch.no_grad()
-    def p_ai(model, tok, ai_idx, texts):
-        enc = tok(texts, return_tensors="pt", truncation=True, padding=True, max_length=512).to("cuda")
-        logits = model(**enc).logits.float()
-        return torch.softmax(logits, dim=-1)[:, ai_idx].cpu().tolist()
-
-    def reward_fn(prompts, completions, **_):
-        texts = []
-        for c in completions:
-            if isinstance(c, list) and c and isinstance(c[0], dict):
-                texts.append(c[0].get("content", ""))
-            else:
-                texts.append(str(c))
-        ensemble = [p_ai(d, tok, idx, texts) for d, tok, idx in detectors]
-        n = len(detectors)
-        return [1.0 - sum(ensemble[k][i] for k in range(n)) / n for i in range(len(texts))]
-
-    return reward_fn
+    n = len(detectors)
+    per = []
+    with torch.no_grad():
+        for d, dt, ai_idx in detectors:
+            enc = dt(texts, return_tensors="pt", truncation=True, padding=True, max_length=512).to("cuda")
+            logits = d(**enc).logits.float()
+            per.append(torch.softmax(logits, dim=-1)[:, ai_idx].cpu().tolist())
+    agg = [sum(per[k][i] for k in range(n)) / n for i in range(len(texts))]
+    return agg, per
 
 
-def train(cfg: Cfg) -> tuple[list[str], list[Any]]:
+def compute_logp(model, sequences, prompt_len):
+    """Sum log-prob of completion tokens. One sequence at a time to save VRAM."""
     import torch
-    from datasets import Dataset
-    from peft import LoraConfig, prepare_model_for_kbit_training
+    import torch.nn.functional as F
+    results = []
+    for i in range(sequences.shape[0]):
+        seq = sequences[i:i+1]
+        out = model(seq)
+        logits = out.logits[:, :-1, :]
+        targets = seq[:, 1:]
+        log_probs = F.log_softmax(logits, dim=-1)
+        gather = log_probs.gather(2, targets.unsqueeze(-1)).squeeze(-1)
+        mask = torch.zeros_like(gather)
+        mask[:, prompt_len - 1:] = 1.0
+        results.append((gather * mask).sum(dim=-1))
+        del out, logits, log_probs, gather, mask
+    return torch.cat(results)
+
+
+def train(cfg: Cfg) -> tuple[list[str], list[dict]]:
+    import torch
+    from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+    from torch.optim import AdamW
     from transformers import AutoModelForCausalLM, AutoTokenizer
-    from trl import GRPOConfig, GRPOTrainer
 
     OUT.mkdir(parents=True, exist_ok=True)
     print(f"[gpu] {torch.cuda.get_device_name(0)} ({torch.cuda.get_device_properties(0).total_memory/1e9:.1f} GB)", flush=True)
@@ -167,67 +171,108 @@ def train(cfg: Cfg) -> tuple[list[str], list[Any]]:
     base_model = AutoModelForCausalLM.from_pretrained(cfg.base_model, **model_kwargs)
     if cfg.use_qlora:
         base_model = prepare_model_for_kbit_training(base_model)
+    else:
+        base_model = base_model.cuda()
+
+    lora_cfg = LoraConfig(
+        r=cfg.lora_r, lora_alpha=2 * cfg.lora_r, lora_dropout=0.05,
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
+        bias="none", task_type="CAUSAL_LM",
+    )
+    policy = get_peft_model(base_model, lora_cfg)
+    trainable = sum(p.numel() for p in policy.parameters() if p.requires_grad)
+    total = sum(p.numel() for p in policy.parameters())
+    print(f"[lora] trainable: {trainable:,} / {total:,} = {trainable/total:.2%}", flush=True)
 
     detectors = load_detectors(cfg)
-    reward_fn = make_reward_fn(detectors)
 
     prompts = load_prompts(cfg, cfg.n_train_prompts + cfg.n_eval_prompts)
     train_prompts = prompts[: cfg.n_train_prompts]
     eval_prompts = prompts[cfg.n_train_prompts :]
     (OUT / "eval_prompts.jsonl").write_text("\n".join(json.dumps({"source": p}) for p in eval_prompts))
+    print(f"[data] train={len(train_prompts)}  eval={len(eval_prompts)}", flush=True)
 
-    train_ds = Dataset.from_list([{"prompt": format_prompt(tokenizer, p)} for p in train_prompts])
+    optim = AdamW([p for p in policy.parameters() if p.requires_grad], lr=cfg.learning_rate)
 
-    peft_config = LoraConfig(
-        r=cfg.lora_r,
-        lora_alpha=2 * cfg.lora_r,
-        lora_dropout=0.05,
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],
-        bias="none",
-        task_type="CAUSAL_LM",
-    )
+    log_lines: list[dict] = []
+    t0 = time.time()
+    for step, src in enumerate(train_prompts):
+        prompt_text = format_prompt(tokenizer, src)
+        enc = tokenizer(prompt_text, return_tensors="pt").to("cuda")
+        prompt_len = enc.input_ids.shape[1]
 
-    args = GRPOConfig(
-        output_dir=str(ADAPTER_DIR),
-        learning_rate=cfg.learning_rate,
-        num_train_epochs=cfg.epochs,
-        per_device_train_batch_size=cfg.per_device_batch,
-        gradient_accumulation_steps=cfg.grad_accum,
-        num_generations=cfg.num_generations,
-        max_prompt_length=cfg.max_prompt_length,
-        max_completion_length=cfg.max_completion_length,
-        temperature=cfg.temperature,
-        beta=cfg.beta_kl,
-        bf16=True,
-        logging_steps=5,
-        save_strategy="steps",
-        save_steps=100,
-        report_to=[],
-        gradient_checkpointing=True,
-        warmup_ratio=0.03,
-    )
+        # Sample G completions
+        policy.eval()
+        with torch.no_grad():
+            seqs = policy.generate(
+                input_ids=enc.input_ids,
+                attention_mask=enc.attention_mask,
+                do_sample=True,
+                temperature=cfg.temperature,
+                top_p=0.95,
+                max_new_tokens=cfg.max_completion_length,
+                num_return_sequences=cfg.num_generations,
+                pad_token_id=tokenizer.eos_token_id,
+            )
+        completions = [tokenizer.decode(s[prompt_len:], skip_special_tokens=True).strip() for s in seqs]
+        rewards_p_ai, _ = detector_p_ai(detectors, completions)
+        rewards = [1.0 - p for p in rewards_p_ai]
+        rewards_t = torch.tensor(rewards, device="cuda")
+        baseline = rewards_t.mean()
+        std = rewards_t.std() + 1e-6
+        advantages = (rewards_t - baseline) / std
 
-    trainer = GRPOTrainer(
-        model=base_model,
-        reward_funcs=reward_fn,
-        args=args,
-        train_dataset=train_ds,
-        peft_config=peft_config,
-        processing_class=tokenizer,
-    )
+        policy.train()
+        logp_policy = compute_logp(policy, seqs, prompt_len)
+        # Reference policy = same model with LoRA adapter disabled (saves a full model copy).
+        with torch.no_grad():
+            with policy.disable_adapter():
+                logp_ref = compute_logp(policy, seqs, prompt_len)
 
-    print("[train] starting GRPO", flush=True)
-    trainer.train()
+        n_tokens = max(seqs.shape[1] - prompt_len, 1)
+        pg_loss = -(advantages.detach() * (logp_policy / n_tokens)).mean()
+        kl = ((logp_policy - logp_ref) / n_tokens).mean()
+        loss = pg_loss + cfg.beta_kl * kl
 
-    print(f"[save] adapter -> {ADAPTER_DIR}", flush=True)
-    trainer.save_model(str(ADAPTER_DIR))
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_([p for p in policy.parameters() if p.requires_grad], 1.0)
+        optim.step()
+        optim.zero_grad()
+        torch.cuda.empty_cache()
+
+        line = {
+            "step": step + 1,
+            "mean_reward": float(rewards_t.mean().item()),
+            "max_reward": float(rewards_t.max().item()),
+            "mean_p_ai": float(sum(rewards_p_ai) / len(rewards_p_ai)),
+            "kl": float(kl.item()),
+            "pg_loss": float(pg_loss.item()),
+            "loss": float(loss.item()),
+            "best_completion": completions[int(rewards_t.argmax())][:200],
+            "t": round(time.time() - t0, 1),
+        }
+        log_lines.append(line)
+        print(
+            f"step {step+1:4d}/{len(train_prompts)}  "
+            f"R̄={line['mean_reward']:.3f}  R_max={line['max_reward']:.3f}  "
+            f"p_ai={line['mean_p_ai']:.3f}  KL={line['kl']:+.4f}  "
+            f"loss={line['loss']:+.3f}  t={line['t']}s",
+            flush=True,
+        )
+
+        if (step + 1) % cfg.save_every == 0:
+            policy.save_pretrained(str(ADAPTER_DIR))
+            LOG_PATH.write_text(json.dumps(log_lines, indent=2))
+            print(f"  [checkpoint at step {step+1}]", flush=True)
+
+    policy.save_pretrained(str(ADAPTER_DIR))
     tokenizer.save_pretrained(str(ADAPTER_DIR))
-    LOG_PATH.write_text(json.dumps(trainer.state.log_history, indent=2))
+    LOG_PATH.write_text(json.dumps(log_lines, indent=2))
+    print(f"[save] adapter -> {ADAPTER_DIR}", flush=True)
+    return eval_prompts, log_lines
 
-    return eval_prompts, trainer.state.log_history
 
-
-def evaluate(cfg: Cfg, eval_prompts: list[str]) -> dict:
+def evaluate(cfg: Cfg, eval_prompts: list[str]):
     import statistics
     import torch
     from peft import PeftModel
@@ -241,18 +286,6 @@ def evaluate(cfg: Cfg, eval_prompts: list[str]) -> dict:
         tokenizer.pad_token = tokenizer.eos_token
 
     detectors = load_detectors(cfg)
-
-    @torch.no_grad()
-    def score(texts):
-        per = []
-        for d, dt, idx in detectors:
-            enc = dt(texts, return_tensors="pt", truncation=True, padding=True, max_length=512).to("cuda")
-            logits = d(**enc).logits.float()
-            per.append(torch.softmax(logits, dim=-1)[:, idx].cpu().tolist())
-        n = len(detectors)
-        agg = [sum(per[k][i] for k in range(n)) / n for i in range(len(texts))]
-        return agg, {cfg.detector_ids[i].split("/")[-1]: per[i] for i in range(n)}
-
     emb = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2").cuda()
 
     def cosine(a, b):
@@ -266,9 +299,7 @@ def evaluate(cfg: Cfg, eval_prompts: list[str]) -> dict:
         enc = tokenizer(prompt, return_tensors="pt").to("cuda")
         out = model.generate(
             **enc,
-            do_sample=True,
-            temperature=0.85,
-            top_p=0.95,
+            do_sample=True, temperature=0.85, top_p=0.95,
             max_new_tokens=cfg.max_completion_length,
             pad_token_id=tokenizer.eos_token_id,
         )
@@ -276,7 +307,7 @@ def evaluate(cfg: Cfg, eval_prompts: list[str]) -> dict:
 
     def evaluate_model(model, label):
         outs = [humanize(model, s) for s in eval_prompts]
-        ens, per_d = score(outs)
+        ens, per_d = detector_p_ai(detectors, outs)
         sims = cosine(eval_prompts, outs)
         return {
             "label": label,
@@ -285,12 +316,12 @@ def evaluate(cfg: Cfg, eval_prompts: list[str]) -> dict:
             "mean_similarity": statistics.fmean(sims),
             "asr_ensemble": sum(1 for p in ens if p < 0.5) / max(len(ens), 1),
             "asr_per_detector": {
-                name: sum(1 for p in scores if p < 0.5) / max(len(scores), 1)
-                for name, scores in per_d.items()
+                cfg.detector_ids[i].split("/")[-1]: sum(1 for p in per_d[i] if p < 0.5) / max(len(per_d[i]), 1)
+                for i in range(len(detectors))
             },
             "outputs": outs,
             "p_ai_ensemble": ens,
-            "p_ai_per_detector": per_d,
+            "p_ai_per_detector": {cfg.detector_ids[i].split("/")[-1]: per_d[i] for i in range(len(detectors))},
             "similarity": sims,
         }
 
@@ -315,13 +346,12 @@ def evaluate(cfg: Cfg, eval_prompts: list[str]) -> dict:
     }
     EVAL_PATH.write_text(json.dumps({"summary": summary, "base": res_base, "trained": res_trained}, indent=2))
     print(json.dumps(summary, indent=2), flush=True)
-    return summary
 
 
 def main():
     cfg = Cfg()
     print(f"[cfg] {cfg}", flush=True)
-    eval_prompts, _log = train(cfg)
+    eval_prompts, _ = train(cfg)
     evaluate(cfg, eval_prompts)
     DONE_PATH.write_text("ok\n")
     print("[done]", flush=True)
@@ -331,5 +361,6 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:  # noqa: BLE001
-        print(f"[error] {e}", flush=True)
+        import traceback
+        print(f"[error] {e}\n{traceback.format_exc()}", flush=True)
         sys.exit(1)

@@ -61,14 +61,25 @@ async function main(): Promise<TrainResult> {
     await conn.uploadFile(TRAIN_PY, '/workspace/code/train.py');
 
     console.log('> installing python deps (one-time)...');
-    const PIP = [
-      'python -m pip install --quiet --upgrade pip wheel',
-      'python -m pip install --quiet',
-      '"transformers==4.46.0" "trl==0.12.0" "peft==0.13.2" "accelerate==1.1.0"',
-      '"datasets==3.1.0" "sentence-transformers==3.3.0" "bitsandbytes==0.44.1" "numpy<2"',
-    ].join(' ');
+    // Force-upgrade — runpod/pytorch image ships with older trl/transformers
+    // that don't have GRPOConfig.
+    const PIP =
+      'python -m pip install --quiet --upgrade pip wheel && ' +
+      // No TRL — train.py uses hand-rolled REINFORCE+KL (avoids version hell).
+      'python -m pip install --quiet --upgrade ' +
+      '"transformers>=4.45" "peft>=0.13" "accelerate>=1.0" ' +
+      '"datasets>=3.0" "sentence-transformers>=3.0" "bitsandbytes>=0.44" "numpy<2"';
     const install = await conn.run(PIP);
     if (install.code !== 0) throw new Error(`pip install failed (code ${install.code})`);
+    // Quick sanity: confirm the bare essentials import + GPU is visible.
+    const sanity = await conn.run(
+      `python -c "
+import torch, transformers, peft, datasets
+print('torch', torch.__version__, 'cuda', torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else '')
+print('transformers', transformers.__version__, 'peft', peft.__version__, 'datasets', datasets.__version__)
+"`,
+    );
+    if (sanity.code !== 0) throw new Error(`sanity import failed:\n${sanity.stderr}`);
 
     console.log('> launching training (this is the long part — sit back)...');
     const train = await conn.run('cd /workspace && python -u code/train.py 2>&1 | tee output/run.log');
