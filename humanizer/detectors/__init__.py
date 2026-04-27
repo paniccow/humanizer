@@ -8,11 +8,14 @@ _LAZY = {
     "RoBERTaDetector": (".roberta", "RoBERTaDetector"),
     "Binoculars": (".binoculars", "Binoculars"),
     "default_ensemble": (".factory", "default_ensemble"),
+    "holdout_ensemble": (".holdout", "holdout_ensemble"),
+    "HOLDOUT_DETECTOR_IDS": (".holdout", "HOLDOUT_DETECTOR_IDS"),
 }
 
 __all__ = [
     "Detector", "DetectorScore", "DetectorEnsemble", "EnsembleResult",
-    "RoBERTaDetector", "Binoculars", "pick_device", "default_ensemble",
+    "RoBERTaDetector", "Binoculars", "pick_device",
+    "default_ensemble", "holdout_ensemble", "HOLDOUT_DETECTOR_IDS",
 ]
 
 

@@ -36,14 +36,17 @@ class PipelineConfig:
     do_qa_gate: bool = True              # abort to prior best on similarity collapse
 
     # Best-of-N + refinement knobs
-    n_candidates: int = 8
-    max_refine_passes: int = 2
+    n_candidates: int = 16               # bumped from 8 — costs more API calls but typically -0.05 p_ai
+    max_refine_passes: int = 3           # bumped from 2 — most outputs converge in 1-2 passes
     target_p_ai: float = 0.20            # stop refining once below this
     target_pattern: float = 0.30
     similarity_threshold: float = 0.70
     detector_weight: float = 0.6
     pattern_weight: float = 0.3
     similarity_weight: float = 0.1
+    # Refinement: when iterating, inject the still-flagged pattern signals
+    # into the next prompt so the model knows what to fix.
+    targeted_refine_prompts: bool = True
 
     # Substage configs
     scrub: ScrubConfig = field(default_factory=ScrubConfig)
@@ -146,6 +149,9 @@ class Pipeline:
         return chosen
 
     def _stage_refine(self, text: str, original: str, result: PipelineResult) -> str:
+        """Iterate paraphrase+select. Each pass gets a *targeted* prompt that
+        names the specific signals still firing (if `targeted_refine_prompts`).
+        Stop early when both p_ai and pattern thresholds are met."""
         for i in range(self.config.max_refine_passes):
             p_ai, pattern, _ = self._final_scores(text, original)
             if p_ai is not None and p_ai <= self.config.target_p_ai and (
@@ -153,15 +159,50 @@ class Pipeline:
             ):
                 break
             before = text
-            cands = self.humanizer.sample(text, n=self.config.n_candidates)
+            # Targeted refinement: build an input that calls out which AI tells
+            # are still firing, so the model knows what to fix this pass.
+            target_text = self._build_refine_input(text) if self.config.targeted_refine_prompts else text
+            cands = self.humanizer.sample(target_text, n=self.config.n_candidates)
             text, score, meta = self._select(original, cands)
+            flagged = self._currently_flagged_signals(before)
             result.stages.append(StageTrace(
                 name=f"refine_pass_{i+1}",
                 text_before=before,
                 text_after=text,
-                metadata={**meta, "combined_score": score},
+                metadata={**meta, "combined_score": score, "flagged_before": flagged},
             ))
         return text
+
+    def _currently_flagged_signals(self, text: str) -> list[str]:
+        """Which pattern signals still fire on the current candidate."""
+        return analyze(text).flagged
+
+    def _build_refine_input(self, text: str) -> str:
+        """Wrap the text with explicit guidance on which AI tells still fire.
+        The base humanizer's system prompt already says "make it human"; this
+        gives it the *specific* axes that are still failing on THIS draft."""
+        flagged = self._currently_flagged_signals(text)
+        if not flagged:
+            return text
+        # Map signal names -> human-readable instructions for the refine pass.
+        guidance = {
+            "burstiness": "vary sentence length more — mix short fragments with longer sentences",
+            "stiff_transitions": "remove stiff transitional phrases (Furthermore, Moreover, Additionally, In conclusion)",
+            "favorite_words": "replace AI-favorite words (delve, leverage, intricate, multifaceted, paramount)",
+            "em_dash_density": "reduce em-dash usage",
+            "hedging": "remove hedging boilerplate (It's important to note that, In today's...)",
+            "tricolons": "break up tricolons (X, Y, and Z patterns)",
+            "contraction_deficit": "use contractions (don't / can't / it's / that's)",
+            "ngram_repetition": "vary phrasing — you're repeating 4-grams",
+            "type_token": "use a wider vocabulary range",
+            "sentence_start_uniformity": "vary how sentences start — don't begin them the same way",
+        }
+        instructions = "\n".join(f"- {guidance[f]}" for f in flagged if f in guidance)
+        return (
+            f"This draft still reads as AI on these axes — fix THESE specifically:\n"
+            f"{instructions}\n\n"
+            f"Draft:\n{text}"
+        )
 
     def _stage_burstiness(self, text: str, result: PipelineResult) -> str:
         before = text
