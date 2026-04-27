@@ -1,0 +1,7 @@
+node_modules/
+adapter/
+eval.json
+*.log
+.env
+.env.local
+bun.lockb

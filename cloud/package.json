@@ -1,0 +1,24 @@
+{
+  "name": "humanizer-cloud",
+  "version": "0.1.0",
+  "description": "TypeScript orchestration + serving layer for humanizer GRPO training on RunPod 4090s.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "launch": "bun run launch.ts",
+    "serve": "bun run serve.ts",
+    "provision": "bun run provision.ts",
+    "teardown": "bun run provision.ts -- terminate",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "hono": "^4.6.0",
+    "node-ssh": "^13.2.0",
+    "p-retry": "^6.2.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.1.0",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  }
+}
