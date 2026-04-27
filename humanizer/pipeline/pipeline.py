@@ -196,6 +196,9 @@ class Pipeline:
             "ngram_repetition": "vary phrasing — you're repeating 4-grams",
             "type_token": "use a wider vocabulary range",
             "sentence_start_uniformity": "vary how sentences start — don't begin them the same way",
+            "abstract_subject": "use concrete subjects (people, you, we, real names) instead of abstract nouns ('The system', 'The framework')",
+            "enumeration_shape": "avoid formulaic enumerations ('Whether it's X or Y', 'Not only X but also Y', 'From X to Y')",
+            "modality_overload": "reduce 'must / should / ought to' — make declarative claims instead",
         }
         instructions = "\n".join(f"- {guidance[f]}" for f in flagged if f in guidance)
         return (

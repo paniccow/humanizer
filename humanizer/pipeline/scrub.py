@@ -449,12 +449,15 @@ def _add_variance(text: str, target_cv: float = 0.35) -> tuple[str, int]:
         longest_idx = max(range(len(sents)), key=lambda i: counts[i])
         s = sents[longest_idx]
         # Try splitters in order of how "natural" the break is.
+        # No-comma subord-conj splits would break restrictive clauses
+        # ('the store where I bought milk') — kept comma-only.
         new_pair = None
         for pat in (
-            r";\s+",                              # semicolon
-            r",\s+(and|but|so|yet|or)\s+",        # coordinator
-            r",\s+which\s+",                      # which-relative
-            r",\s+(?=[A-Za-z]+\s+)",              # any comma followed by a clause
+            r";\s+",                                            # semicolon
+            r",\s+(and|but|so|yet|or)\s+",                      # coordinator
+            r",\s+(which|who)\s+",                              # rel pronoun
+            r",\s+(where|when|because|although|since|while)\s+", # subord conj (comma)
+            r",\s+(?=[A-Za-z]+\s+)",                            # any comma followed by a clause
         ):
             m = re.search(pat, s)
             if m:
