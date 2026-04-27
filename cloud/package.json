@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "launch": "bun run launch.ts",
+    "monitor": "bun run monitor.ts",
     "serve": "bun run serve.ts",
     "provision": "bun run provision.ts",
     "teardown": "bun run provision.ts -- terminate",

@@ -14,6 +14,24 @@ The literature (2023-2025) converges on three findings:
 
 This repo implements all three layers, so you can use it without training (inference-only) or train your own policy on rented GPU.
 
+A fourth layer was added on top: a deterministic **scrub** stage that strips
+the lexical AI tells (Furthermore/leverage/intricate/...) in microseconds
+without touching a model — see `humanizer/pipeline/scrub.py`. Composes with
+everything above.
+
+## What's in this repo
+
+| Layer | Module | Use without training? |
+|------|--------|------------------------|
+| Open-source AI-text **detectors** + ensemble | `humanizer/detectors/` | yes |
+| **AI-pattern fingerprint** (perplexity, burstiness, vocabulary, ...) | `humanizer/patterns/` | yes |
+| **Deterministic scrub** (Stage 1) | `humanizer/pipeline/scrub.py` | yes — instant, no model |
+| **Adversarial best-of-N** humanizer | `humanizer/humanizers/adversarial.py` | yes — needs API/local LLM |
+| **Multi-stage pipeline** (scrub → paraphrase → select → refine → burst → QA gate) | `humanizer/pipeline/pipeline.py` | yes |
+| **Burstiness post-processor** | `humanizer/postprocess/` | yes |
+| **Trained policy loader** (LoRA adapter from GRPO run) | `humanizer/humanizers/trained.py` | needs trained adapter |
+| **GRPO training stack on rented 4090s** | `cloud/` (TypeScript orchestration + Python inner loop) | needs RunPod account |
+
 ## Architecture
 
 ```
