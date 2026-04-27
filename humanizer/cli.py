@@ -196,7 +196,7 @@ def reject(
     base_url: Optional[str] = typer.Option(None, "--base-url"),
     judge: str = typer.Option(
         "gptzero", "--judge",
-        help="Judge detector: gptzero (paid API, real-world) or roberta (local, free)",
+        help="Judge: gptzero | originality | pangram (paid APIs) or roberta (local, free)",
     ),
     n: int = typer.Option(8, "-n", help="Candidates per round"),
     rounds: int = typer.Option(4, "--rounds", help="Max escalation rounds"),
@@ -222,11 +222,19 @@ def reject(
     if judge == "gptzero":
         from .detectors import GPTZeroDetector
         judge_det = GPTZeroDetector()
+    elif judge == "originality":
+        from .detectors import OriginalityDetector
+        judge_det = OriginalityDetector()
+    elif judge == "pangram":
+        from .detectors import PangramDetector
+        judge_det = PangramDetector()
     elif judge == "roberta":
         from .detectors import RoBERTaDetector
         judge_det = RoBERTaDetector("roberta-large-openai-detector")
     else:
-        raise typer.BadParameter(f"--judge must be 'gptzero' or 'roberta', got {judge!r}")
+        raise typer.BadParameter(
+            f"--judge must be one of: gptzero, originality, pangram, roberta — got {judge!r}"
+        )
 
     base = PromptHumanizer(PromptHumanizerConfig(model=model, base_url=base_url))
 

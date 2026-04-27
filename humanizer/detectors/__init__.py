@@ -12,6 +12,10 @@ _LAZY = {
     "HOLDOUT_DETECTOR_IDS": (".holdout", "HOLDOUT_DETECTOR_IDS"),
     "GPTZeroDetector": (".gptzero", "GPTZeroDetector"),
     "GPTZeroConfig": (".gptzero", "GPTZeroConfig"),
+    "OriginalityDetector": (".originality", "OriginalityDetector"),
+    "OriginalityConfig": (".originality", "OriginalityConfig"),
+    "PangramDetector": (".pangram", "PangramDetector"),
+    "PangramConfig": (".pangram", "PangramConfig"),
 }
 
 __all__ = [
@@ -19,6 +23,8 @@ __all__ = [
     "RoBERTaDetector", "Binoculars", "pick_device",
     "default_ensemble", "holdout_ensemble", "HOLDOUT_DETECTOR_IDS",
     "GPTZeroDetector", "GPTZeroConfig",
+    "OriginalityDetector", "OriginalityConfig",
+    "PangramDetector", "PangramConfig",
 ]
 
 
