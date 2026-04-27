@@ -128,6 +128,18 @@ _HEDGING_DROP = (
     "in today's fast-paced ",
     "in today's world, ",
     "in today's society, ",
+    # Newer GPT-4/Claude tells:
+    "and there you have it",
+    "and that's the beauty of it",
+    "the bottom line is that ",
+    "at the end of the day, ",
+    "needless to say, ",
+    "it goes without saying that ",
+    # Parenthetical AI hedges
+    "(in many cases) ",
+    "(if you will) ",
+    "(so to speak) ",
+    "(for that matter) ",
 )
 
 _PHRASE_SWAPS = {
@@ -161,6 +173,25 @@ _PHRASE_SWAPS = {
     "in today's rapidly evolving digital ": "in the digital ",
     "in today's rapidly evolving ": "in the modern ",
     "in today's fast-paced ": "in the modern ",
+    # Common AI buzzword adjacencies
+    "deep dive into": "look at",
+    "deep dive": "look",
+    "key takeaway": "takeaway",
+    "key takeaways": "takeaways",
+    "moving forward,": "going forward,",
+    "going forward,": "next,",
+    "by harnessing": "by using",
+    "harnessing the power of": "using",
+    # "It's not just X, it's Y" — AI loves this construction
+    "it's not just about ": "it's about ",
+    "it's not only about ": "it's about ",
+    # "Not only X, but also Y" -> simpler
+    "not only that, but ": "and ",
+    # Common cliche openers AI overuses
+    "let's face it, ": "",
+    "let's be honest, ": "",
+    "the truth is, ": "",
+    "the fact is, ": "",
 }
 
 _CONTRACTIONS = {
@@ -201,9 +232,10 @@ class ScrubConfig:
     drop_hedging: bool = True
     swap_phrases: bool = True
     apply_contractions: bool = True
-    break_tricolons: bool = True              # NEW: split "X, Y, and Z" into ". Z" sentence
-    split_long_sentences: bool = True         # NEW: break sentences > 30 words at coordinators
-    merge_short_runs: bool = True             # NEW: merge adjacent fragments
+    thin_em_dashes: bool = True               # NEW: replace em-dashes with mixed comma/period
+    break_tricolons: bool = True              # split "X, Y, and Z" into ". Z" sentence
+    split_long_sentences: bool = True         # break sentences > 30 words at coordinators
+    merge_short_runs: bool = True             # merge adjacent fragments
     seed: int | None = None
     # If True, preserve original casing when swapping words (Leverage → Use, not use).
     case_preserve: bool = True
@@ -266,6 +298,47 @@ _SENT_BOUNDARY = re.compile(r"(?<=[.!?])\s+(?=[A-Z\"'(])")
 
 def _split_sentences(text: str) -> list[str]:
     return [s.strip() for s in _SENT_BOUNDARY.split(text.strip()) if s.strip()]
+
+
+def _thin_em_dashes(text: str) -> tuple[str, int]:
+    """Replace em-dashes (— or --) with more human-typical punctuation.
+    AI overuses em-dashes 5-10x relative to typical human prose.
+
+    Strategy: alternate between comma and period to break the AI rhythm:
+      - " — " or " -- "  ->  ", " (comma, mid-sentence)
+      - If the dash separates two independent clauses, use ". " (period)
+    """
+    edits = 0
+    # Normalize -- to em-dash variant for consistency.
+    text = text.replace("--", "—")
+
+    # Find all em-dashes; alternate between comma/period.
+    # Period when the right side starts with capital + multiple words (likely clause).
+    parts = text.split("—")
+    if len(parts) <= 1:
+        return text, 0
+    out_parts = [parts[0].rstrip()]
+    for i, right in enumerate(parts[1:], start=1):
+        right_clean = right.strip()           # both sides — was leaking trailing whitespace
+        if not right_clean:
+            continue
+        # Heuristic: period if right side looks like a new sentence
+        first_word = right_clean.split()[0] if right_clean else ""
+        if first_word[:1].isupper() and len(right_clean.split()) >= 4:
+            sep = ". "
+        else:
+            sep = ", "
+        out_parts.append(sep + right_clean)
+        edits += 1
+    text = "".join(out_parts)
+    # Final cleanup: collapse double-commas, fix capitalization after periods.
+    text = re.sub(r",\s*,", ",", text)
+    text = re.sub(
+        r"(^|(?<=[.!?])\s+)([a-z])",
+        lambda m: m.group(1) + m.group(2).upper(),
+        text,
+    )
+    return text, edits
 
 
 def _break_tricolons(text: str) -> tuple[str, int]:
@@ -455,6 +528,10 @@ def scrub(text: str, cfg: ScrubConfig | None = None) -> ScrubResult:
     if cfg.apply_contractions:
         text, n = _swap_table(text, _CONTRACTIONS, case_preserve=cfg.case_preserve, rng=rng)
         _bump("contraction", n)
+
+    if cfg.thin_em_dashes:
+        text, n = _thin_em_dashes(text)
+        _bump("em_dash_thin", n)
 
     # Burstiness fixes — restructure at the SENTENCE level. These come AFTER
     # word-level swaps so we operate on the cleaner text.
