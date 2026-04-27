@@ -63,3 +63,6 @@ logs/
 .env
 .env.*
 !.env.example
+
+# Trained adapters — small but git-pollution; live on HF Hub or pod
+cloud/adapter*/

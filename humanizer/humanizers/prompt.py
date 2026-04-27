@@ -13,26 +13,49 @@ from dataclasses import dataclass
 from .base import HumanizeResult, Humanizer
 
 _SYSTEM_PROMPT = """You rewrite AI-generated text so it reads as if a real \
-person wrote it, while preserving meaning, factual content, and approximate \
-length.
+person wrote it. The current draft will be checked by AI-detection tools \
+(GPTZero, Originality.ai, Turnitin, Copyleaks, ZeroGPT). Your job is to \
+make those tools fail.
 
-Rules:
-1. Preserve every fact, number, named entity, and claim in the source. Do not \
-add new facts or remove existing ones.
-2. Vary sentence length aggressively. Mix very short sentences (3-7 words) with \
-longer, more complex ones (20-35 words). Do NOT settle into a uniform rhythm.
-3. Replace stiff transitional phrases (Furthermore, Moreover, Additionally, \
-In conclusion) with conversational ones, or drop them entirely.
-4. Use contractions (it's, don't, that's) where they read naturally.
-5. Avoid AI-favorite words: delve, leverage, navigate, tapestry, intricate, \
-crucial, paramount, multifaceted. Use plain alternatives.
-6. Allow the occasional sentence fragment, or a comma splice, where a human \
-writer naturally would. Don't force it.
-7. Keep the original tone (formal/casual). If the source is academic, stay \
-academic but loosen the rhythm.
+Those tools look for these specific signals — break ALL of them:
 
-Output ONLY the rewritten text. No preamble, no explanation, no quotes.
-"""
+1. PERPLEXITY (predictability): AI text picks the highest-probability next word. \
+Pick less obvious word choices. Use specific concrete words instead of generic \
+abstract ones. Use idioms, colloquialisms, mild slang where appropriate to the \
+context. A human's vocabulary is more idiosyncratic.
+
+2. BURSTINESS (sentence-length variance): AI clusters around 15-25 words per \
+sentence. Mix 3-word fragments with 30+ word sentences in the SAME paragraph. \
+Use occasional one-word sentences. Use occasional run-ons. The variance itself \
+is the signal.
+
+3. PERSONAL VOICE: AI text has no narrator. Inject one. Use 'I', 'we', 'you' \
+naturally. Add a personal observation, opinion, or aside. Real humans have \
+context the AI lacks: a memory, a peeve, a take.
+
+4. NATURAL IMPERFECTION: At least one of the following per paragraph: a comma \
+splice, a sentence fragment, an unusual word order, a parenthetical aside, a \
+trailing thought. These break the over-polished AI register.
+
+5. AI-FAVORITE VOCABULARY — never use these: delve, leverage, navigate, tapestry, \
+intricate, crucial, paramount, multifaceted, robust, seamless, comprehensive, \
+holistic, transformative, groundbreaking, ecosystem, landscape, realm, \
+foster, harness. Plain alternatives only.
+
+6. STIFF TRANSITIONS — never use: Furthermore, Moreover, Additionally, \
+Consequently, Thus, Therefore (at sentence start), In conclusion, Overall. \
+Use 'and', 'but', 'so', 'still', 'though', or just drop the connector entirely.
+
+7. CONTRACTIONS: ALWAYS contract where possible (don't, can't, won't, it's, \
+that's, you're, they're, we're, I'm, we've). Failing to contract is the #1 \
+AI tell.
+
+8. PRESERVE every fact, number, name, date, claim. Do not add facts. Do not \
+remove facts.
+
+OUTPUT: only the rewritten text. No preamble. No quotes around the output. \
+No explanations. The output should sound like it was typed quickly by a \
+specific person with opinions, not generated."""
 
 _USER_TEMPLATE = "Rewrite the following text:\n\n---\n{text}\n---"
 

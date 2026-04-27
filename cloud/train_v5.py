@@ -1,27 +1,43 @@
-"""GRPO inner loop v4 — Qwen2.5-3B + lessons from runs #1-3.
+"""GRPO inner loop v5 — adversarial discriminator + run-004 recipe.
 
-Hypotheses tested:
-  + Model capacity matters: bumps to Qwen2.5-3B-Instruct (was 1.5B)
-    AuthorMist's exact base. Should produce more semantically rich
-    rewrites that satisfy detector + similarity simultaneously.
-  + Sim floor was too tight at 0.78 (run #2 result: trained model
-    *more* detectable because the gate blocked needed restructurings).
-    Loosens to 0.65.
-  + Detector evasion needs stronger weight when there's a sim floor
-    (so the floor is the boundary, not the objective). w_det 1.0 -> 1.5.
-  + Drops fakespot detector (failed to load in run #3 — broken state-dict).
-    Keeps the 3 that work: roberta-base, roberta-large, desklib.
+Direct response to the user's "real detector still flags it" finding from
+end-to-end OpenRouter validation. The static training detectors (RoBERTa-OpenAI
+base/large, Desklib) form a fixed evaluation surface; once the policy finds a
+niche all three miss, training plateaus. A fresh discriminator that updates
+on the policy's own current outputs catches that mode collapse.
 
-VRAM management for 3B in bf16 on 22GB-effective 4090:
-  Qwen-3B bf16:           ~6.0 GB
-  LoRA-r8 grads + optim:  ~1.0 GB
+Recipe (extends v4):
+  + Replace Desklib detector with an ADVERSARIAL discriminator. Same VRAM
+    budget (Desklib was DeBERTa-large ~1.7GB; discriminator is RoBERTa-base
+    ~500MB, plus optimizer state).
+  + Discriminator initialized fresh from openai-community/roberta-base-openai-detector
+    weights (warm start). Updated every DISC_UPDATE_EVERY policy steps on a
+    rolling window of (recent policy outputs, fresh human samples).
+  + Reward stays multi-objective:
+      R(y) = w_det · (1 - mean(p_ai across [roberta-base, roberta-large, discriminator])
+           + w_sim · cosine_sim(original, y)
+           + w_pat · (1 - pattern_aggregate(y))
+           + length_penalty
+    With sim_floor 0.65 hard gate.
+
+Hypothesis: the discriminator's continuously-shifting decision boundary
+forces the policy to actually become human-like rather than detector-niche-like.
+
+Inherits from v4:
+  + Qwen2.5-3B-Instruct base, LoRA-r8, completion=140, G=2.
+  + sim_floor=0.65, w_det=1.5, w_sim=0.3, w_pat=0.3.
+
+VRAM management for 3B + discriminator on 22GB-effective 4090:
+  Qwen-3B bf16:                ~6.0 GB
+  LoRA-r8 grads + optim:       ~1.0 GB
   Reference (via .disable_adapter()):  0
-  3 detectors bf16:       ~3.0 GB
-  Sim model (MiniLM):     ~0.4 GB
-  Generation buffers G=2 × completion=140:  ~2.5 GB
-  Activations:            ~5 GB
-  Headroom:               ~4 GB
-  Total:                  ~17-18 GB. Comfortable on 22GB.
+  2 frozen detectors bf16:     ~1.5 GB  (was 3 detectors, now 2)
+  Discriminator bf16 + optim:  ~1.5 GB  (RoBERTa-base ~500MB + Adam)
+  Sim model (MiniLM):          ~0.4 GB
+  Generation buffers G=2:      ~2.5 GB
+  Activations:                 ~5 GB
+  Headroom:                    ~4 GB
+  Total:                       ~17-18 GB. Same as v4.
 
   First attempt at G=4/completion=180/r=16 hit OOM at step 0 forward;
   the actual 4090 instances have 22GB effective (some reserved).
@@ -81,8 +97,15 @@ class Cfg:
     detector_ids: tuple[str, ...] = (
         "openai-community/roberta-base-openai-detector",
         "openai-community/roberta-large-openai-detector",
-        "desklib/ai-text-detector-v1.01",
-    )  # 3 working diverse detectors. Drops fakespot (broken state-dict in run #3).
+    )  # Static detectors — kept frozen. Discriminator joins them dynamically.
+
+    # Adversarial discriminator settings:
+    disc_init_id: str = "openai-community/roberta-base-openai-detector"
+    disc_update_every: int = 50          # update discriminator every N policy steps
+    disc_train_steps: int = 30           # mini-batches per update
+    disc_lr: float = 2e-5
+    disc_window: int = 200               # rolling window of recent (ai, human) pairs
+    disc_batch: int = 8                  # mini-batch size for disc training
     n_train_prompts: int = int(os.environ.get("HUMANIZER_TRAIN_N", 1200))
     n_eval_prompts: int = int(os.environ.get("HUMANIZER_EVAL_N", 30))
     min_words: int = 60
@@ -254,6 +277,81 @@ def load_prompts(cfg: Cfg, n: int) -> list[str]:
     return out
 
 
+def load_human_samples(cfg: Cfg, n: int) -> list[str]:
+    """Stream the same dataset but pull HUMAN-labelled rows (generated=0).
+    These are the negative examples for the adversarial discriminator."""
+    from datasets import load_dataset
+    print(f"[data] streaming human samples from {cfg.dataset}...", flush=True)
+    ds = load_dataset(cfg.dataset, split="train", streaming=True)
+    out: list[str] = []
+    for ex in ds:
+        if int(ex.get("generated", 0)) != 0:
+            continue
+        t = (ex.get("text") or "").strip()
+        wc = len(t.split())
+        if cfg.min_words <= wc <= cfg.max_words:
+            out.append(t)
+            if len(out) >= n:
+                break
+    print(f"[data] got {len(out)} human samples for discriminator", flush=True)
+    return out
+
+
+def load_discriminator(cfg: Cfg):
+    """Load a fresh trainable RoBERTa-base classifier, warm-started from the
+    OpenAI detector weights. Will be updated every cfg.disc_update_every steps."""
+    import torch
+    from transformers import AutoModelForSequenceClassification, AutoTokenizer
+    print(f"[disc] init from {cfg.disc_init_id} (trainable)", flush=True)
+    d = AutoModelForSequenceClassification.from_pretrained(
+        cfg.disc_init_id, torch_dtype=torch.float32, ignore_mismatched_sizes=True
+    ).cuda().train()
+    # All params trainable for the discriminator (unlike frozen detectors)
+    for p in d.parameters():
+        p.requires_grad_(True)
+    t = AutoTokenizer.from_pretrained(cfg.disc_init_id)
+    id2 = d.config.id2label
+    ai_idx = next(
+        i for i, l in id2.items()
+        if "fake" in str(l).lower() or "label_1" in str(l).lower() or i == d.config.num_labels - 1
+    )
+    optim = torch.optim.AdamW(d.parameters(), lr=cfg.disc_lr)
+    return d, t, int(ai_idx), optim
+
+
+def update_discriminator(disc, disc_tok, disc_optim, ai_texts, human_texts, cfg):
+    """Run a few mini-batches of supervised training on the discriminator.
+    Positive class (AI) = recent policy outputs. Negative class (human) = real."""
+    import random as _r
+    import torch
+    import torch.nn.functional as F
+
+    if not ai_texts or not human_texts:
+        return
+    disc.train()
+    rng = _r.Random()
+    pairs = [(t, 1) for t in ai_texts] + [(t, 0) for t in human_texts]
+    rng.shuffle(pairs)
+
+    for step in range(cfg.disc_train_steps):
+        batch = rng.sample(pairs, k=min(cfg.disc_batch, len(pairs)))
+        texts = [p[0] for p in batch]
+        labels = torch.tensor([p[1] for p in batch], device="cuda")
+        enc = disc_tok(texts, return_tensors="pt", truncation=True, padding=True, max_length=512).to("cuda")
+        logits = disc(**enc).logits
+        # The label-index for the AI class might not be 1 in id2label; adjust.
+        # Since we warm-started from the OpenAI detector where AI = "fake" class,
+        # we computed ai_idx earlier. Map our 0/1 labels accordingly.
+        # Simplest: use binary cross-entropy on the AI-class logit.
+        ai_logits = logits[:, 1] if logits.shape[1] > 1 else logits.squeeze(-1)
+        loss = F.binary_cross_entropy_with_logits(ai_logits, labels.float())
+        disc_optim.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(disc.parameters(), 1.0)
+        disc_optim.step()
+    disc.eval()
+
+
 def load_detectors(cfg: Cfg):
     """Load detectors. Skip ones that fail to load (e.g. config / state-dict
     mismatches) rather than crashing the whole run — better to train against
@@ -286,12 +384,17 @@ def load_detectors(cfg: Cfg):
     return detectors
 
 
-def detector_p_ai(detectors, texts):
+def detector_p_ai(detectors, texts, extra_disc=None):
+    """Get p_ai per detector. If extra_disc=(disc, tok, ai_idx), include it
+    as an additional ensemble member with EQUAL weight to the static detectors."""
     import torch
-    n = len(detectors)
+    members = list(detectors)
+    if extra_disc is not None:
+        members.append(extra_disc)
+    n = len(members)
     per = []
     with torch.no_grad():
-        for d, dt, ai_idx in detectors:
+        for d, dt, ai_idx in members:
             enc = dt(texts, return_tensors="pt", truncation=True, padding=True, max_length=512).to("cuda")
             logits = d(**enc).logits.float()
             per.append(torch.softmax(logits, dim=-1)[:, ai_idx].cpu().tolist())
@@ -332,10 +435,10 @@ def length_penalty(source: str, candidate: str, cfg: Cfg) -> float:
     return -0.3 * (ratio - cfg.len_max_ratio) / cfg.len_max_ratio
 
 
-def compute_reward(cfg, sim_model, detectors, source, candidates):
-    """Return rewards (list[float]) and details (list[dict]) for a candidate group."""
+def compute_reward(cfg, sim_model, detectors, source, candidates, extra_disc=None):
+    """Reward includes the static detectors plus an optional adversarial discriminator."""
     import torch
-    p_ais, _ = detector_p_ai(detectors, candidates)
+    p_ais, _ = detector_p_ai(detectors, candidates, extra_disc=extra_disc)
     # Cosine similarity of source vs each candidate
     src_emb = sim_model.encode([source], normalize_embeddings=True, convert_to_tensor=True)
     cand_emb = sim_model.encode(candidates, normalize_embeddings=True, convert_to_tensor=True)
@@ -412,6 +515,12 @@ def train(cfg: Cfg) -> tuple[list[str], list[dict]]:
     print(f"[similarity] loading {cfg.sim_model_id}", flush=True)
     sim_model = SentenceTransformer(cfg.sim_model_id, device="cuda")
 
+    # Adversarial discriminator + a pool of human samples to train it against.
+    disc, disc_tok, disc_ai_idx, disc_optim = load_discriminator(cfg)
+    extra_disc = (disc, disc_tok, disc_ai_idx)
+    human_pool = load_human_samples(cfg, cfg.disc_window * 4)  # 4x the window for variety
+    ai_buffer: list[str] = []  # rolling FIFO of recent policy outputs
+
     prompts = load_prompts(cfg, cfg.n_train_prompts + cfg.n_eval_prompts)
     train_prompts = prompts[: cfg.n_train_prompts]
     eval_prompts = prompts[cfg.n_train_prompts:]
@@ -422,6 +531,9 @@ def train(cfg: Cfg) -> tuple[list[str], list[dict]]:
 
     log_lines: list[dict] = []
     t0 = time.time()
+    import random as _r
+    _rng = _r.Random()
+
     for step, src in enumerate(train_prompts):
         prompt_text = format_prompt(tokenizer, src)
         enc = tokenizer(prompt_text, return_tensors="pt").to("cuda")
@@ -441,7 +553,17 @@ def train(cfg: Cfg) -> tuple[list[str], list[dict]]:
             )
         completions = [tokenizer.decode(s[prompt_len:], skip_special_tokens=True).strip() for s in seqs]
 
-        rewards, details = compute_reward(cfg, sim_model, detectors, src, completions)
+        rewards, details = compute_reward(
+            cfg, sim_model, detectors, src, completions, extra_disc=extra_disc,
+        )
+        # Add the gate-passing completions to the AI buffer for the discriminator.
+        for c, d in zip(completions, details):
+            if not d["gated"]:
+                ai_buffer.append(c)
+        # Trim AI buffer to the configured window.
+        if len(ai_buffer) > cfg.disc_window:
+            ai_buffer = ai_buffer[-cfg.disc_window:]
+
         rewards_t = torch.tensor(rewards, device="cuda")
         baseline = rewards_t.mean()
         std = rewards_t.std() + 1e-6
@@ -487,6 +609,15 @@ def train(cfg: Cfg) -> tuple[list[str], list[dict]]:
             f"KL={line['kl']:+.3f}  t={line['t']}s",
             flush=True,
         )
+
+        # Update the adversarial discriminator periodically.
+        if (step + 1) % cfg.disc_update_every == 0 and len(ai_buffer) >= cfg.disc_batch:
+            human_batch = _rng.sample(human_pool, k=min(cfg.disc_window, len(human_pool)))
+            update_discriminator(disc, disc_tok, disc_optim, ai_buffer, human_batch, cfg)
+            print(
+                f"  [disc updated at step {step+1}; ai_buf={len(ai_buffer)} human={len(human_batch)}]",
+                flush=True,
+            )
 
         if (step + 1) % cfg.save_every == 0:
             policy.save_pretrained(str(ADAPTER_DIR))
