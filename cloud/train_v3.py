@@ -228,14 +228,22 @@ def load_prompts(cfg: Cfg, n: int) -> list[str]:
 
 
 def load_detectors(cfg: Cfg):
+    """Load detectors. Skip ones that fail to load (e.g. config / state-dict
+    mismatches) rather than crashing the whole run — better to train against
+    3 detectors than 0."""
     import torch
     from transformers import AutoModelForSequenceClassification, AutoTokenizer
     detectors = []
     for det_id in cfg.detector_ids:
         print(f"[detector] loading {det_id}", flush=True)
-        d = AutoModelForSequenceClassification.from_pretrained(
-            det_id, torch_dtype=torch.bfloat16
-        ).cuda().eval()
+        try:
+            d = AutoModelForSequenceClassification.from_pretrained(
+                det_id, torch_dtype=torch.bfloat16, ignore_mismatched_sizes=True
+            ).cuda().eval()
+        except Exception as e:  # noqa: BLE001
+            print(f"[detector] FAILED to load {det_id}: {e}", flush=True)
+            print(f"[detector] continuing without it", flush=True)
+            continue
         for p in d.parameters():
             p.requires_grad_(False)
         dt = AutoTokenizer.from_pretrained(det_id)
@@ -245,6 +253,9 @@ def load_detectors(cfg: Cfg):
             if "fake" in str(l).lower() or "label_1" in str(l).lower() or i == d.config.num_labels - 1
         )
         detectors.append((d, dt, int(ai_idx)))
+    if not detectors:
+        raise RuntimeError("No detectors loaded successfully")
+    print(f"[detector] {len(detectors)}/{len(cfg.detector_ids)} loaded", flush=True)
     return detectors
 
 
