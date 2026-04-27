@@ -19,10 +19,12 @@ import { PodConnection } from './ssh.ts';
 
 const HELDOUT_PY = resolve(import.meta.dir, 'heldout_eval.py');
 
+// torch>=2.6 needed for some detector .bin files (Hello-SimpleAI).
+// transformers>=4.45 + tokenizers>=0.20 for modern AutoModel resolution.
 const PIP_HELDOUT =
   'python -m pip install --quiet --upgrade pip wheel && ' +
   'python -m pip install --quiet --upgrade ' +
-  '"transformers>=4.45" "tokenizers>=0.20" "numpy<2"';
+  '"torch>=2.6" "transformers>=4.45" "tokenizers>=0.20" "numpy<2"';
 
 async function main(): Promise<void> {
   const inputs = process.argv.slice(2);

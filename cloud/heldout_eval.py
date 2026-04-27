@@ -19,14 +19,21 @@ import statistics
 import sys
 from pathlib import Path
 
-# Held-out detectors. Distinct from the training set:
-#   - SuperAnnotate roberta-large (different team's training data)
-#   - coai roberta-base (different corpus)
-#   - HC3-trained (Hello-SimpleAI) — different distribution entirely
+# Held-out detector candidates. Tries them in order; accepts whichever
+# load successfully. We need 2-3 working detectors out of the list.
+#
+# Earlier failures and why:
+#   - SuperAnnotate/roberta-large-llm-content-detector: missing model_type
+#   - coai/roberta-ai-detector-v2: gated repo (401 without HF_TOKEN)
+#   - Hello-SimpleAI/chatgpt-detector-roberta: needs torch>=2.6 (uses .bin file)
+#
+# Workaround for Hello-SimpleAI: pip install torch>=2.6 in the pip step.
 HOLDOUT_IDS = (
-    "SuperAnnotate/roberta-large-llm-content-detector",
-    "coai/roberta-ai-detector-v2",
-    "Hello-SimpleAI/chatgpt-detector-roberta",
+    "Hello-SimpleAI/chatgpt-detector-roberta",       # works with torch>=2.6
+    "andreas122001/roberta-mixed-detector",
+    "PirateXX/AI-Content-Detector",
+    "roberta-large-openai-detector",                 # legacy namespace
+    "andreas122001/roberta-academic-detector",
 )
 
 
