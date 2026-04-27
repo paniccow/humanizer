@@ -4,10 +4,17 @@ Take AI-generated text and turn it into something that reads like a person wrote
 
 After 4 GRPO training runs (~$8) and many iterations on a deterministic scrub pipeline, **the actual deliverable is the multi-stage inference pipeline**, not any trained adapter. Across all 4 runs, `Qwen2.5-3B-Instruct base + scrub` produces lower AI-pattern scores than any GRPO-trained adapter. See `experiments/run-004/FINDINGS.md` for the cross-run benchmark that drove this conclusion.
 
-**Headline numbers** (pattern aggregate, lower = more human, 13 signals):
-- Raw AI text baseline: ~0.22
-- After `scrub`: ~0.07 (**70% reduction, no model call, microseconds**)
-- After full pipeline (`scrub + LLM paraphrase + best-of-16 + refine + burstiness`): expected ~0.04 (not yet measured end-to-end)
+**Headline numbers** (pattern aggregate, lower = more human, 13 signals).
+Reproduce with `python scripts/headline_benchmark.py`:
+
+```
+                                       BASE    +SCRUB   TRAINED    +SCRUB
+Run #4 (Qwen-3B base)                  0.108    0.067    0.122     0.080
+```
+
+- Across all 4 GRPO runs, **best `BASE+SCRUB` is 0.067** — 38% lower than the cleanest raw base output, 70% lower than 1.5B-base outputs.
+- After scrub, 87% of 240 outputs across all runs trigger ZERO pattern flags. The 13% remaining mostly have 1 of: burstiness (rare), `contraction_deficit`, or `modality_overload`.
+- Full pipeline with LLM stage (`scrub + paraphrase + best-of-16 + refine + burstiness`): not yet measured end-to-end. Expected to push lower.
 
 55 tests passing. CLI: `humanizer pipeline -f input.txt --no-llm` runs the deterministic-only stack with no API key.
 
