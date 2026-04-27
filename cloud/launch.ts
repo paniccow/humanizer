@@ -30,7 +30,7 @@ import type { PodInfo, TrainResult, RunPodConfig } from './types.ts';
 
 const TRAIN_PY = resolve(import.meta.dir, process.env.TRAIN_SCRIPT ?? 'train.py');
 const ADAPTER_OUT = resolve(process.cwd(), process.env.ADAPTER_OUT ?? 'adapter');
-const EVAL_OUT = resolve(process.cwd(), 'eval.json');
+const EVAL_OUT = resolve(process.cwd(), process.env.EVAL_OUT ?? 'eval.json');
 const POLL_SECONDS = Number(process.env.POLL_SECONDS ?? 30);
 
 function loadCfg(): RunPodConfig {
