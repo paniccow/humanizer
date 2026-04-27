@@ -1,8 +1,15 @@
 # humanizer
 
-Train an LLM to rewrite AI-generated text so it reads as if a human wrote it — fooling AI-text detectors while preserving meaning, factual content, and writing quality.
+Take AI-generated text and turn it into something that reads like a person wrote it — preserving meaning, factual content, and writing quality.
 
-This is an ML research / learning project. It implements the current state of the art in detector evasion (as of early 2026): a small instruction-tuned LLM fine-tuned with **GRPO** against an ensemble of open-source AI-text detectors, with **KL regularization** preserving fluency and semantic similarity.
+After 4 GRPO training runs (~$8) and many iterations on a deterministic scrub pipeline, **the actual deliverable is the multi-stage inference pipeline**, not any trained adapter. Across all 4 runs, `Qwen2.5-3B-Instruct base + scrub` produces lower AI-pattern scores than any GRPO-trained adapter. See `experiments/run-004/FINDINGS.md` for the cross-run benchmark that drove this conclusion.
+
+**Headline numbers** (pattern aggregate, lower = more human, 13 signals):
+- Raw AI text baseline: ~0.22
+- After `scrub`: ~0.07 (**70% reduction, no model call, microseconds**)
+- After full pipeline (`scrub + LLM paraphrase + best-of-16 + refine + burstiness`): expected ~0.04 (not yet measured end-to-end)
+
+55 tests passing. CLI: `humanizer pipeline -f input.txt --no-llm` runs the deterministic-only stack with no API key.
 
 ## Why this approach
 
@@ -23,14 +30,35 @@ everything above.
 
 | Layer | Module | Use without training? |
 |------|--------|------------------------|
-| Open-source AI-text **detectors** + ensemble | `humanizer/detectors/` | yes |
-| **AI-pattern fingerprint** (perplexity, burstiness, vocabulary, ...) | `humanizer/patterns/` | yes |
-| **Deterministic scrub** (Stage 1) | `humanizer/pipeline/scrub.py` | yes — instant, no model |
+| **Deterministic scrub** (Stage 1) | `humanizer/pipeline/scrub.py` | **yes — instant, no model**. Handles transitions, AI-favorite vocabulary, hedging boilerplate, em-dash density, archaic-formal markers, tricolons, sentence splitting/merging, variance injection, a/an article repair, quoted-speech protection. ~50 rules. |
+| **AI-pattern fingerprint** (13 signals) | `humanizer/patterns/` | yes. Burstiness, stiff transitions, favorite words, em-dash density, hedging, tricolons, contraction deficit, n-gram repetition, type-token ratio, sentence-start uniformity, abstract subjects, enumeration shapes, modality overload. |
+| **Multi-stage pipeline** | `humanizer/pipeline/pipeline.py` | yes. `scrub → paraphrase → best-of-N → iterative refine → burstiness → QA gate`. Each stage independently toggleable. |
+| **Open-source AI-text detectors** + ensemble | `humanizer/detectors/` | yes. RoBERTa-base/large OpenAI, Desklib DeBERTa, Binoculars zero-shot, held-out factory. |
 | **Adversarial best-of-N** humanizer | `humanizer/humanizers/adversarial.py` | yes — needs API/local LLM |
-| **Multi-stage pipeline** (scrub → paraphrase → select → refine → burst → QA gate) | `humanizer/pipeline/pipeline.py` | yes |
 | **Burstiness post-processor** | `humanizer/postprocess/` | yes |
-| **Trained policy loader** (LoRA adapter from GRPO run) | `humanizer/humanizers/trained.py` | needs trained adapter |
+| **Trained policy loader** (LoRA adapter) | `humanizer/humanizers/trained.py` | needs adapter; per FINDINGS, BASE outperforms across all 4 runs |
 | **GRPO training stack on rented 4090s** | `cloud/` (TypeScript orchestration + Python inner loop) | needs RunPod account |
+| **CLI** | `humanizer/cli.py` | `humanize / detect / scrub / patterns / pipeline / eval / prepare-data` |
+
+## Quick start (no training, no API key)
+
+```bash
+git clone https://github.com/paniccow/humanizer
+cd humanizer
+pip install -e .
+
+# Stage-1 deterministic scrub (microseconds, no models)
+humanizer scrub "Furthermore, organizations leverage the intricate complexities of AI." --show-edits
+
+# Just see what's flagged in some text
+humanizer patterns -f input.txt
+
+# Full pipeline, deterministic-only mode (still no API key)
+humanizer pipeline -f input.txt --no-llm
+
+# Full pipeline with an LLM (needs OPENAI_API_KEY)
+humanizer pipeline -f input.txt --model gpt-4o-mini -n 16
+```
 
 ## Architecture
 
