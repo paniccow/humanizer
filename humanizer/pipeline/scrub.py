@@ -513,11 +513,42 @@ def _merge_short_runs(text: str, min_words: int) -> tuple[str, int]:
     return " ".join(out), edits
 
 
+# Only DOUBLE quotes are protected. Single quotes are far more often contractions
+# (it's, don't, they're) than actual quoted speech, and our previous regex
+# was matching across contraction apostrophes — hiding entire paragraphs from
+# the scrubber.
+_QUOTE_RE = re.compile(r'("[^"]*"|“[^”]*”)')
+
+
+def _protect_quotes(text: str) -> tuple[str, dict[str, str]]:
+    """Replace quoted spans with placeholder tokens before scrub. Returns
+    (text-with-placeholders, restore_map). Quotes are sacred — never modify
+    text inside them."""
+    restore: dict[str, str] = {}
+    counter = [0]
+
+    def _sub(m: re.Match) -> str:
+        token = f"__SCRUB_QUOTE_{counter[0]:03d}__"
+        counter[0] += 1
+        restore[token] = m.group(0)
+        return token
+    return _QUOTE_RE.sub(_sub, text), restore
+
+
+def _restore_quotes(text: str, restore: dict[str, str]) -> str:
+    for token, original in restore.items():
+        text = text.replace(token, original)
+    return text
+
+
 def scrub(text: str, cfg: ScrubConfig | None = None) -> ScrubResult:
     cfg = cfg or ScrubConfig()
     rng = random.Random(cfg.seed)
     edits = 0
     by_kind: dict[str, int] = {}
+
+    # Protect quoted dialogue from any modification.
+    text, _quote_restore = _protect_quotes(text)
 
     def _bump(kind: str, n: int) -> None:
         nonlocal edits
@@ -622,5 +653,8 @@ def scrub(text: str, cfg: ScrubConfig | None = None) -> ScrubResult:
     text = re.sub(r"\b(a|an|A|An)(\s+)([a-zA-Z][a-zA-Z'-]*)", _fix_an, text)
     # Drop dangling commas right after a period (artifact of mid-clause drops).
     text = re.sub(r"\.\s*,\s*", ". ", text)
+
+    # Restore protected quotes.
+    text = _restore_quotes(text, _quote_restore)
 
     return ScrubResult(text=text, edits=edits, edits_by_kind=by_kind)
