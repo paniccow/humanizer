@@ -238,6 +238,10 @@ _ABSTRACT_SUBJECTS = (
     "the architecture", "the infrastructure", "the integration",
     "the implementation", "the approach", "the methodology",
     "the foundation", "the cornerstone", "the underlying",
+    "the introduction of", "the emergence of", "the proliferation of",
+    "the advent of", "the rise of", "the development of",
+    "the importance of", "the significance of", "the role of",
+    "the evolution of", "the growth of", "the impact of",
 )
 
 

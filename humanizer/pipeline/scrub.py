@@ -162,6 +162,14 @@ _HEDGING_DROP = (
     "in the grand scheme of things, ",
     "with that being said, ",
     "that being said, ",
+    "it is no surprise that ",
+    "it's no surprise that ",
+    "it comes as no surprise that ",
+    "in essence, ",
+    "from the perspective of ",
+    "from a broader perspective, ",
+    "the fact remains that ",
+    "as such, ",
     # Parenthetical AI hedges
     "(in many cases) ",
     "(if you will) ",
@@ -219,6 +227,11 @@ _PHRASE_SWAPS = {
     "let's be honest, ": "",
     "the truth is, ": "",
     "the fact is, ": "",
+    # NOTE: 'the proliferation of', 'the introduction of', etc. were
+    # tried as phrase swaps but they create subject-verb agreement bugs
+    # ('the proliferation of new tools has emerged' -> 'more new tools has
+    # emerged'). Left for the LLM stage in the full pipeline to handle.
+    # Detected as patterns; not deterministically rewritten.
 }
 
 _CONTRACTIONS = {
