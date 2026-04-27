@@ -87,7 +87,14 @@ class PromptHumanizer(Humanizer):
         api_key = os.environ.get(self.config.api_key_env, "EMPTY")
         self._client = OpenAI(api_key=api_key, base_url=self.config.base_url)
 
-    def _generate(self, text: str, *, n: int = 1) -> list[str]:
+    def _generate(
+        self,
+        text: str,
+        *,
+        n: int = 1,
+        temperature: float | None = None,
+        top_p: float | None = None,
+    ) -> list[str]:
         # Try a single API call with n=N first (cheaper if supported).
         # Many OpenRouter routes silently return only 1 completion regardless
         # of the n parameter. If we asked for n>1 and got back fewer, fall
@@ -98,8 +105,8 @@ class PromptHumanizer(Humanizer):
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": _USER_TEMPLATE.format(text=text)},
             ],
-            temperature=self.config.temperature,
-            top_p=self.config.top_p,
+            temperature=self.config.temperature if temperature is None else temperature,
+            top_p=self.config.top_p if top_p is None else top_p,
             max_tokens=self.config.max_output_tokens,
         )
         first = self._client.chat.completions.create(**params, n=n)
@@ -116,6 +123,15 @@ class PromptHumanizer(Humanizer):
         out = self._generate(text)[0]
         return HumanizeResult(original=text, text=out, attempts=1)
 
-    def sample(self, text: str, n: int) -> list[str]:
-        """Generate `n` candidate humanizations. Used by AdversarialHumanizer."""
-        return self._generate(text, n=n)
+    def sample(
+        self,
+        text: str,
+        n: int,
+        *,
+        temperature: float | None = None,
+        top_p: float | None = None,
+    ) -> list[str]:
+        """Generate `n` candidate humanizations. Used by AdversarialHumanizer
+        and RejectionSamplingHumanizer. Optional temperature/top_p override
+        per call so callers can ramp diversity across rounds."""
+        return self._generate(text, n=n, temperature=temperature, top_p=top_p)

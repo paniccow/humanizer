@@ -10,12 +10,15 @@ _LAZY = {
     "default_ensemble": (".factory", "default_ensemble"),
     "holdout_ensemble": (".holdout", "holdout_ensemble"),
     "HOLDOUT_DETECTOR_IDS": (".holdout", "HOLDOUT_DETECTOR_IDS"),
+    "GPTZeroDetector": (".gptzero", "GPTZeroDetector"),
+    "GPTZeroConfig": (".gptzero", "GPTZeroConfig"),
 }
 
 __all__ = [
     "Detector", "DetectorScore", "DetectorEnsemble", "EnsembleResult",
     "RoBERTaDetector", "Binoculars", "pick_device",
     "default_ensemble", "holdout_ensemble", "HOLDOUT_DETECTOR_IDS",
+    "GPTZeroDetector", "GPTZeroConfig",
 ]
 
 

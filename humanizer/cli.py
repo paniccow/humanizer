@@ -188,6 +188,83 @@ def pipeline(
     console.print(result.text)
 
 
+@app.command()
+def reject(
+    text: Optional[str] = typer.Argument(None),
+    file: Optional[Path] = typer.Option(None, "-f", "--file"),
+    model: str = typer.Option("gpt-4o-mini", "--model"),
+    base_url: Optional[str] = typer.Option(None, "--base-url"),
+    judge: str = typer.Option(
+        "gptzero", "--judge",
+        help="Judge detector: gptzero (paid API, real-world) or roberta (local, free)",
+    ),
+    n: int = typer.Option(8, "-n", help="Candidates per round"),
+    rounds: int = typer.Option(4, "--rounds", help="Max escalation rounds"),
+    threshold: float = typer.Option(0.05, "--threshold", help="Strict pass threshold on judge p_ai"),
+    sim: float = typer.Option(0.78, "--sim", help="Min cosine similarity vs original"),
+    show_trace: bool = typer.Option(False, "--trace", help="Print per-round candidate scores"),
+):
+    """Rejection-sample candidates against a target detector until one passes.
+
+    Best-of-N with a STRICT threshold against the real judge — the operating
+    mode of paid commercial humanizers. Pair with --judge gptzero (set
+    GPTZERO_API_KEY) for real-world reliability; --judge roberta is free
+    local validation.
+    """
+    src = _read_input(text, file)
+    from .humanizers import (
+        PromptHumanizer,
+        PromptHumanizerConfig,
+        RejectionConfig,
+        RejectionSamplingHumanizer,
+    )
+
+    if judge == "gptzero":
+        from .detectors import GPTZeroDetector
+        judge_det = GPTZeroDetector()
+    elif judge == "roberta":
+        from .detectors import RoBERTaDetector
+        judge_det = RoBERTaDetector("roberta-large-openai-detector")
+    else:
+        raise typer.BadParameter(f"--judge must be 'gptzero' or 'roberta', got {judge!r}")
+
+    base = PromptHumanizer(PromptHumanizerConfig(model=model, base_url=base_url))
+
+    traces: list[tuple[int, list[str], list[float]]] = []
+
+    def _trace(round_idx: int, cands: list[str], scores: list[float]) -> None:
+        traces.append((round_idx, cands, scores))
+
+    cfg = RejectionConfig(
+        candidates_per_round=n,
+        max_rounds=rounds,
+        p_ai_threshold=threshold,
+        similarity_threshold=sim,
+    )
+    h = RejectionSamplingHumanizer(
+        base, judge_det, cfg, on_round=_trace if show_trace else None
+    )
+    result = h.humanize(src)
+
+    meta = result.metadata or {}
+    passed = meta.get("passed", False)
+    badge = "[green]PASSED[/green]" if passed else "[yellow]EXHAUSTED[/yellow]"
+    console.print(
+        f"[dim]{badge}  judge={meta.get('judge')}  "
+        f"p_ai={result.score:.3f}  rounds={meta.get('rounds_used')}  "
+        f"attempts={result.attempts}  judge_calls={meta.get('judge_calls')}[/dim]\n"
+    )
+    if show_trace:
+        for round_idx, cands, scores in traces:
+            console.print(f"[bold]== round {round_idx} ==[/bold]")
+            for c, s in zip(cands, scores):
+                marker = "[green]✓[/green]" if s < threshold else " "
+                snippet = c[:80].replace("\n", " ")
+                console.print(f"  {marker} p_ai={s:.3f}  {snippet}...")
+        console.print()
+    console.print(result.text)
+
+
 @app.command(name="eval")
 def eval_cmd(
     file: Path = typer.Option(..., "-f", "--file", help="JSONL with `source` field"),

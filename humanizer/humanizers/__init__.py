@@ -10,6 +10,8 @@ _LAZY = {
     "AdversarialConfig": (".adversarial", "AdversarialConfig"),
     "TrainedHumanizer": (".trained", "TrainedHumanizer"),
     "TrainedHumanizerConfig": (".trained", "TrainedHumanizerConfig"),
+    "RejectionSamplingHumanizer": (".rejection", "RejectionSamplingHumanizer"),
+    "RejectionConfig": (".rejection", "RejectionConfig"),
 }
 
 __all__ = [
@@ -17,6 +19,7 @@ __all__ = [
     "PromptHumanizer", "PromptHumanizerConfig",
     "AdversarialHumanizer", "AdversarialConfig",
     "TrainedHumanizer", "TrainedHumanizerConfig",
+    "RejectionSamplingHumanizer", "RejectionConfig",
 ]
 
 
