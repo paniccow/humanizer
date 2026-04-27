@@ -26,6 +26,9 @@ class Fingerprint:
     ngram_repetition: float
     type_token: float
     sentence_start_uniformity: float
+    abstract_subject: float = 0.0          # NEW
+    enumeration_shape: float = 0.0          # NEW
+    modality_overload: float = 0.0          # NEW
     aggregate: float = 0.0
     flagged: list[str] = field(default_factory=list)
 
@@ -42,6 +45,9 @@ class Fingerprint:
             "ngram_repetition": self.ngram_repetition,
             "type_token": self.type_token,
             "sentence_start_uniformity": self.sentence_start_uniformity,
+            "abstract_subject": self.abstract_subject,
+            "enumeration_shape": self.enumeration_shape,
+            "modality_overload": self.modality_overload,
             "flagged": self.flagged,
         }
 
@@ -57,6 +63,9 @@ class Fingerprint:
             ("ngram_repetition", "repeats 4-grams"),
             ("type_token", "low vocabulary diversity"),
             ("sentence_start_uniformity", "sentences start the same way"),
+            ("abstract_subject", "abstract noun subjects (The system / The framework)"),
+            ("enumeration_shape", "AI enumeration shapes (Whether it's X / Not only Y but also Z)"),
+            ("modality_overload", "overuse of must/should/ought to"),
         ]
         lines = [f"Aggregate AI-likeness: {self.aggregate:.2f}"]
         for key, desc in order:
@@ -81,6 +90,9 @@ _WEIGHTS = {
     "ngram_repetition": 0.7,
     "type_token": 0.6,
     "sentence_start_uniformity": 0.7,
+    "abstract_subject": 0.9,
+    "enumeration_shape": 0.8,
+    "modality_overload": 0.6,
 }
 _FLAG_THRESHOLD = 0.6
 
@@ -97,6 +109,9 @@ def analyze(text: str) -> Fingerprint:
         ngram_repetition=S.ngram_repetition_score(text),
         type_token=S.type_token_ratio_score(text),
         sentence_start_uniformity=S.sentence_start_uniformity_score(text),
+        abstract_subject=S.abstract_subject_score(text),
+        enumeration_shape=S.enumeration_shape_score(text),
+        modality_overload=S.modality_overload_score(text),
     )
     total_w = sum(_WEIGHTS.values())
     agg = sum(getattr(fp, k) * w for k, w in _WEIGHTS.items()) / total_w

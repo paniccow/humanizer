@@ -228,3 +228,67 @@ def sentence_start_uniformity_score(text: str) -> float:
     counter = Counter(starts)
     most = counter.most_common(1)[0][1]
     return min(1.0, (most - 1) / max(len(starts) - 1, 1))
+
+
+# ---- Newer / more specific AI-tell signals ----
+
+# Abstract noun subjects AI loves opening sentences with.
+_ABSTRACT_SUBJECTS = (
+    "the system", "the framework", "the ecosystem", "the platform",
+    "the architecture", "the infrastructure", "the integration",
+    "the implementation", "the approach", "the methodology",
+    "the foundation", "the cornerstone", "the underlying",
+)
+
+
+def abstract_subject_score(text: str) -> float:
+    """How often sentences start with an abstract noun subject like 'The system',
+    'The framework' — strongly AI-marked, especially in tech/business prose."""
+    sents = split_sentences(text)
+    if len(sents) < 3:
+        return 0.0
+    hits = 0
+    for s in sents:
+        lower = s.lower()
+        for sub in _ABSTRACT_SUBJECTS:
+            if lower.startswith(sub):
+                hits += 1
+                break
+    rate = hits / len(sents)
+    # Human baseline ~0.05-0.10; AI essays often hit 0.30+.
+    return _logistic(rate, midpoint=0.20, steep=10)
+
+
+# AI loves these formulaic enumeration shapes.
+_ENUMERATION_PATTERNS = (
+    re.compile(r"\b(?:not only|both)\s+\w+(?:\s+\w+){0,3}\s+but\s+also\s+", re.IGNORECASE),
+    re.compile(r"\bwhether\s+it'?s\s+\w+(?:\s+\w+){0,4}\s+(?:or|and)\s+", re.IGNORECASE),
+    re.compile(r"\bfrom\s+\w+(?:\s+\w+){0,4}\s+to\s+\w+(?:\s+\w+){0,4}\b,", re.IGNORECASE),
+    re.compile(r"\bit'?s\s+not\s+(?:just|only)\s+about\s+", re.IGNORECASE),
+)
+
+
+def enumeration_shape_score(text: str) -> float:
+    """Density per 100 words of formulaic AI enumeration shapes."""
+    words = max(len(text.split()), 1)
+    hits = sum(len(p.findall(text)) for p in _ENUMERATION_PATTERNS)
+    per_100 = hits * 100.0 / words
+    # 1+ hit per 100 words is suspicious; saturate at 2+/100.
+    return _logistic(per_100, midpoint=0.7)
+
+
+_MODAL_VERBS = re.compile(
+    r"\b(?:must|should|ought to|needs? to|have to|has to|should not|must not|"
+    r"shouldn't|mustn't|need to)\b",
+    re.IGNORECASE,
+)
+
+
+def modality_overload_score(text: str) -> float:
+    """Density of modal/normative verbs ('must', 'should', 'ought to', 'needs to').
+    AI argumentative writing loads up on these; human writing is more declarative."""
+    words = max(len(text.split()), 1)
+    hits = len(_MODAL_VERBS.findall(text))
+    per_100 = hits * 100.0 / words
+    # Human baseline ~0.5-1.0/100; AI essays often 2-4/100.
+    return _logistic(per_100, midpoint=2.0, steep=4)

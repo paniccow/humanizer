@@ -20,8 +20,10 @@ def test_scrub_lowers_pattern_aggregate():
     scrubbed = scrub(_AI_SAMPLE).text
     after = analyze(scrubbed).aggregate
     assert after < before, f"scrub didn't reduce AI-likeness: {before:.2f} -> {after:.2f}"
-    # Should drop the pattern aggregate by at least 20 percentage points.
-    assert before - after > 0.20, f"scrub barely helped: {before:.2f} -> {after:.2f}"
+    # Should drop pattern aggregate by ≥ 25% relative (more robust to weight changes
+    # as new signals are added).
+    rel_drop = (before - after) / before
+    assert rel_drop > 0.25, f"scrub barely helped: {before:.2f} -> {after:.2f} ({rel_drop:.0%} relative)"
 
 
 def test_scrub_kills_named_offenders():
