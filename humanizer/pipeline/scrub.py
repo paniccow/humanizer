@@ -200,9 +200,14 @@ class ScrubConfig:
     drop_hedging: bool = True
     swap_phrases: bool = True
     apply_contractions: bool = True
+    break_tricolons: bool = True              # NEW: split "X, Y, and Z" into ". Z" sentence
+    split_long_sentences: bool = True         # NEW: break sentences > 30 words at coordinators
+    merge_short_runs: bool = True             # NEW: merge adjacent fragments
     seed: int | None = None
     # If True, preserve original casing when swapping words (Leverage → Use, not use).
     case_preserve: bool = True
+    target_max_words: int = 28                # split threshold for long sentences
+    target_min_words: int = 5                 # merge threshold for short fragments
 
 
 @dataclass
@@ -253,6 +258,99 @@ def _swap_table(text: str, table: dict, *, case_preserve: bool, rng: random.Rand
     return text, edits
 
 
+# ---------- Burstiness fixes (sentence-level restructuring) ----------
+
+_SENT_BOUNDARY = re.compile(r"(?<=[.!?])\s+(?=[A-Z\"'(])")
+
+
+def _split_sentences(text: str) -> list[str]:
+    return [s.strip() for s in _SENT_BOUNDARY.split(text.strip()) if s.strip()]
+
+
+def _break_tricolons(text: str) -> tuple[str, int]:
+    """Convert 'A, B, and C' (when each item is short enough) into 'A and B. C'.
+    Adds a sentence boundary AND breaks the X, Y, and Z pattern in one shot."""
+    edits = 0
+    def _sub(m: re.Match) -> str:
+        nonlocal edits
+        a, b, conj, c = m.group(1), m.group(2), m.group(3), m.group(4)
+        # Only split if the items aren't too long (otherwise risk awkward fragments)
+        if len(a.split()) <= 4 and len(b.split()) <= 4 and len(c.split()) <= 6:
+            edits += 1
+            cap_c = c[:1].upper() + c[1:] if c else c
+            return f"{a} {conj} {b}. {cap_c}"
+        return m.group(0)
+    pattern = re.compile(
+        r"\b([\w-]+(?:\s[\w-]+){0,3}),\s+([\w-]+(?:\s[\w-]+){0,3}),\s+(and|or)\s+([\w-]+(?:\s[\w-]+){0,5})"
+    )
+    new_text = pattern.sub(_sub, text)
+    return new_text, edits
+
+
+def _split_long_sentence(sent: str, max_words: int) -> list[str]:
+    """If a sentence is > max_words and has a coordinator like ', and' / ', but',
+    split it at that coordinator into two sentences."""
+    if len(sent.split()) <= max_words:
+        return [sent]
+    m = re.search(r",\s+(and|but|so|yet|or)\s+", sent)
+    if not m:
+        return [sent]
+    left = sent[: m.start()].strip()
+    right = sent[m.end():].strip()
+    if not left or not right:
+        return [sent]
+    if not left.endswith((".", "!", "?")):
+        left += "."
+    right = right[:1].upper() + right[1:]
+    if not right.endswith((".", "!", "?")):
+        right += "."
+    return [left, right]
+
+
+def _split_long_sentences(text: str, max_words: int) -> tuple[str, int]:
+    sents = _split_sentences(text)
+    new_sents: list[str] = []
+    edits = 0
+    for s in sents:
+        parts = _split_long_sentence(s, max_words)
+        if len(parts) > 1:
+            edits += len(parts) - 1
+        new_sents.extend(parts)
+    return " ".join(new_sents), edits
+
+
+def _merge_short_runs(text: str, min_words: int) -> tuple[str, int]:
+    """Merge runs of adjacent very-short sentences into one sentence with comma joins.
+    Reduces uniformity at the low end."""
+    sents = _split_sentences(text)
+    if len(sents) < 3:
+        return text, 0
+    out: list[str] = []
+    buf: list[str] = []
+    edits = 0
+
+    def _flush() -> None:
+        nonlocal edits
+        if not buf:
+            return
+        if len(buf) == 1:
+            out.append(buf[0])
+        else:
+            merged = ", ".join(s.rstrip(".!?") for s in buf) + "."
+            out.append(merged)
+            edits += len(buf) - 1
+        buf.clear()
+
+    for s in sents:
+        if len(s.split()) < min_words:
+            buf.append(s)
+        else:
+            _flush()
+            out.append(s)
+    _flush()
+    return " ".join(out), edits
+
+
 def scrub(text: str, cfg: ScrubConfig | None = None) -> ScrubResult:
     cfg = cfg or ScrubConfig()
     rng = random.Random(cfg.seed)
@@ -298,6 +396,20 @@ def scrub(text: str, cfg: ScrubConfig | None = None) -> ScrubResult:
     if cfg.apply_contractions:
         text, n = _swap_table(text, _CONTRACTIONS, case_preserve=cfg.case_preserve, rng=rng)
         _bump("contraction", n)
+
+    # Burstiness fixes — restructure at the SENTENCE level. These come AFTER
+    # word-level swaps so we operate on the cleaner text.
+    if cfg.break_tricolons:
+        text, n = _break_tricolons(text)
+        _bump("tricolon_break", n)
+
+    if cfg.split_long_sentences:
+        text, n = _split_long_sentences(text, cfg.target_max_words)
+        _bump("sentence_split", n)
+
+    if cfg.merge_short_runs:
+        text, n = _merge_short_runs(text, cfg.target_min_words)
+        _bump("sentence_merge", n)
 
     # Redundancy collapse: kill adjacent same-stem words like "complex complexities"
     text, n = re.subn(

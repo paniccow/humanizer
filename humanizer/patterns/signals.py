@@ -170,13 +170,15 @@ def tricolon_density_score(text: str) -> float:
 
 
 def contraction_deficit_score(text: str) -> float:
-    """Higher when the text has contraction-eligible phrases but doesn't contract."""
+    """Higher when text has contraction-eligible phrases but doesn't contract.
+    Requires a minimum sample (≥3 total) so a single 'is not' doesn't max
+    out the score on short text — that was a false-positive issue in eval."""
     contracted = len(_CONTRACTIONS_RE.findall(text))
     expandable = len(_EXPANDABLE_PAIRS_RE.findall(text))
     total = contracted + expandable
-    if total == 0:
+    if total < 2:                        # min-sample guard (2 instances minimum)
         return 0.0
-    rate = expandable / total          # high => AI-style "do not"/"is not"
+    rate = expandable / total            # high => AI-style "do not"/"is not"
     return float(rate)
 
 
