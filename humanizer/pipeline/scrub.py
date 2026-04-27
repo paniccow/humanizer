@@ -24,22 +24,23 @@ from dataclasses import dataclass, field
 # ---------- Substitution tables ----------
 
 _TRANSITIONS_DROP = {
-    # Drop entirely; capitalize the following word.
-    r"^Furthermore,\s+",
-    r"\s+Furthermore,\s+",
-    r"^Moreover,\s+",
-    r"\s+Moreover,\s+",
-    r"^Additionally,\s+",
-    r"\s+Additionally,\s+",
-    r"^In addition,\s+",
-    r"\s+In addition,\s+",
-    r"^In conclusion,\s+",
-    r"^To conclude,\s+",
-    r"^In summary,\s+",
-    r"^To summarize,\s+",
-    r"^Overall,\s+",
-    r"^Ultimately,\s+",
-    r"^All in all,\s+",
+    # Drop entirely. Match at text-start OR after sentence-end punctuation —
+    # AI loves dropping these mid-paragraph too.
+    r"(?:^|(?<=[.!?])\s+)Furthermore,\s+",
+    r"\bFurthermore,\s+",
+    r"(?:^|(?<=[.!?])\s+)Moreover,\s+",
+    r"\bMoreover,\s+",
+    r"(?:^|(?<=[.!?])\s+)Additionally,\s+",
+    r"\bAdditionally,\s+",
+    r"(?:^|(?<=[.!?])\s+)In addition,\s+",
+    r"\bIn addition,\s+",
+    r"(?:^|(?<=[.!?])\s+)In conclusion,\s+",
+    r"(?:^|(?<=[.!?])\s+)To conclude,\s+",
+    r"(?:^|(?<=[.!?])\s+)In summary,\s+",
+    r"(?:^|(?<=[.!?])\s+)To summarize,\s+",
+    r"(?:^|(?<=[.!?])\s+)Overall,\s+",
+    r"(?:^|(?<=[.!?])\s+)Ultimately,\s+",
+    r"(?:^|(?<=[.!?])\s+)All in all,\s+",
 }
 
 _TRANSITIONS_SOFT = {
@@ -319,6 +320,64 @@ def _split_long_sentences(text: str, max_words: int) -> tuple[str, int]:
     return " ".join(new_sents), edits
 
 
+def _add_variance(text: str, target_cv: float = 0.35) -> tuple[str, int]:
+    """If sentence-length variance is suspiciously low (CV < target_cv),
+    aggressively split the LONGEST sentences at any reasonable boundary
+    (semicolon first, then any coordinator, then any comma-after-subject)
+    until variance crosses target. Each split reduces uniformity."""
+    import math as _math
+    sents = _split_sentences(text)
+    if len(sents) < 4:
+        return text, 0
+    counts = [len(s.split()) for s in sents]
+    mean = sum(counts) / len(counts)
+    var = sum((c - mean) ** 2 for c in counts) / len(counts)
+    cv = _math.sqrt(var) / mean if mean > 0 else 0.0
+    if cv >= target_cv:
+        return text, 0
+
+    edits = 0
+    max_attempts = 4
+    for _ in range(max_attempts):
+        # Recompute CV; stop if we've reached target.
+        counts = [len(s.split()) for s in sents]
+        mean = sum(counts) / max(len(counts), 1)
+        var = sum((c - mean) ** 2 for c in counts) / max(len(counts), 1)
+        cv = _math.sqrt(var) / mean if mean > 0 else 0.0
+        if cv >= target_cv:
+            break
+        # Pick the longest sentence; try splitting it.
+        longest_idx = max(range(len(sents)), key=lambda i: counts[i])
+        s = sents[longest_idx]
+        # Try splitters in order of how "natural" the break is.
+        new_pair = None
+        for pat in (
+            r";\s+",                              # semicolon
+            r",\s+(and|but|so|yet|or)\s+",        # coordinator
+            r",\s+which\s+",                      # which-relative
+            r",\s+(?=[A-Za-z]+\s+)",              # any comma followed by a clause
+        ):
+            m = re.search(pat, s)
+            if m:
+                left = s[: m.start()].strip()
+                right = s[m.end():].strip()
+                if not left or not right or len(left.split()) < 4 or len(right.split()) < 4:
+                    continue
+                if not left.endswith((".", "!", "?")):
+                    left += "."
+                right = right[:1].upper() + right[1:]
+                if not right.endswith((".", "!", "?")):
+                    right += "."
+                new_pair = [left, right]
+                break
+        if not new_pair:
+            break
+        sents = sents[:longest_idx] + new_pair + sents[longest_idx + 1:]
+        edits += 1
+
+    return " ".join(sents), edits
+
+
 def _merge_short_runs(text: str, min_words: int) -> tuple[str, int]:
     """Merge runs of adjacent very-short sentences into one sentence with comma joins.
     Reduces uniformity at the low end."""
@@ -410,6 +469,12 @@ def scrub(text: str, cfg: ScrubConfig | None = None) -> ScrubResult:
     if cfg.merge_short_runs:
         text, n = _merge_short_runs(text, cfg.target_min_words)
         _bump("sentence_merge", n)
+
+    if cfg.split_long_sentences:
+        # If sentences are still too uniform, aggressively introduce variance
+        # by splitting the longest at any reasonable boundary (semicolon, etc.)
+        text, n = _add_variance(text, target_cv=0.35)
+        _bump("variance_inject", n)
 
     # Redundancy collapse: kill adjacent same-stem words like "complex complexities"
     text, n = re.subn(
