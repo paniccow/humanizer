@@ -55,12 +55,61 @@ export async function provision(): Promise<ProvisionResult> {
   console.log(`  found. lowest community $/hr = ${gpu.communityPrice ?? 'n/a'}`);
 
   console.log(`> Creating pod (image=${POD_IMAGE}, gpu=${cfg.gpuTypeId})...`);
-  const created = await client.createPod({
-    image: POD_IMAGE,
-    name: cfg.podName ?? 'humanizer-grpo',
-    publicKey: cfg.publicSshKey,
-    cloudType: cfg.cloudType,
-  });
+  // Retry on transient capacity errors. RunPod's community pool churns: a
+  // request can fail at T but succeed at T+30s. Try cloud types in order:
+  // configured -> COMMUNITY -> SECURE.
+  const cloudFallback: Array<'COMMUNITY' | 'SECURE' | 'ALL'> = (() => {
+    const seen = new Set<string>();
+    const order: Array<'COMMUNITY' | 'SECURE' | 'ALL'> = [];
+    for (const t of [cfg.cloudType, 'COMMUNITY', 'SECURE'] as const) {
+      const v = t ?? 'COMMUNITY';
+      if (!seen.has(v)) {
+        seen.add(v);
+        order.push(v);
+      }
+    }
+    return order;
+  })();
+
+  const maxAttempts = 4;
+  let created: PodInfo | null = null;
+  let lastErr: unknown;
+  outer: for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    for (const ct of cloudFallback) {
+      try {
+        created = await client.createPod({
+          image: POD_IMAGE,
+          name: cfg.podName ?? 'humanizer-grpo',
+          publicKey: cfg.publicSshKey,
+          cloudType: ct,
+        });
+        if (ct !== cloudFallback[0]) {
+          console.log(`  fallback to cloudType=${ct} succeeded`);
+        }
+        break outer;
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        lastErr = e;
+        // Capacity errors → try next cloud type, then back off and retry.
+        if (msg.includes('does not have the resources') || msg.includes('no resources')) {
+          console.log(`  attempt ${attempt} cloudType=${ct}: no capacity, trying next`);
+          continue;
+        }
+        // Anything else (auth, malformed input, etc.) → don't retry.
+        throw e;
+      }
+    }
+    if (created) break;
+    const backoff = 15 * attempt;
+    console.log(`  all cloudTypes out of capacity; backing off ${backoff}s before retry ${attempt + 1}/${maxAttempts}`);
+    await new Promise((r) => setTimeout(r, backoff * 1000));
+  }
+  if (!created) {
+    throw new Error(
+      `RunPod could not provision a ${cfg.gpuTypeId} after ${maxAttempts} attempts. ` +
+        `Last error: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`,
+    );
+  }
   console.log(`  pod id: ${created.id}`);
 
   console.log(`> Waiting for SSH to come up (typically 60-90s)...`);

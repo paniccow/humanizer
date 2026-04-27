@@ -96,6 +96,26 @@ def detect(
 
 
 @app.command()
+def scrub(
+    text: Optional[str] = typer.Argument(None),
+    file: Optional[Path] = typer.Option(None, "-f", "--file"),
+    show_edits: bool = typer.Option(False, "--show-edits"),
+):
+    """Stage 1 deterministic AI-tell scrubber — runs in microseconds, no model needed."""
+    src = _read_input(text, file)
+    from .pipeline import scrub as _scrub
+    from .patterns import analyze
+
+    before = analyze(src)
+    out = _scrub(src)
+    after = analyze(out.text)
+    if show_edits:
+        console.print(f"[dim]edits: {out.edits}  by_kind: {out.edits_by_kind}[/dim]")
+        console.print(f"[dim]pattern aggregate {before.aggregate:.2f} -> {after.aggregate:.2f}[/dim]\n")
+    console.print(out.text)
+
+
+@app.command()
 def patterns(
     text: Optional[str] = typer.Argument(None),
     file: Optional[Path] = typer.Option(None, "-f", "--file"),
