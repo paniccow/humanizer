@@ -133,6 +133,10 @@ def pipeline(
     text: Optional[str] = typer.Argument(None),
     file: Optional[Path] = typer.Option(None, "-f", "--file"),
     model: str = typer.Option("gpt-4o-mini", "--model"),
+    base_url: Optional[str] = typer.Option(
+        None, "--base-url",
+        help="OpenAI-compatible base URL (OpenRouter: https://openrouter.ai/api/v1)",
+    ),
     n: int = typer.Option(16, "-n", help="Best-of-N candidates for selection"),
     refine_passes: int = typer.Option(3, "--refine-passes"),
     no_llm: bool = typer.Option(False, "--no-llm", help="Skip LLM stages — scrub + post-process only"),
@@ -140,7 +144,14 @@ def pipeline(
     show_trace: bool = typer.Option(False, "--trace", help="Print per-stage trace"),
 ):
     """Full multi-stage humanization pipeline: scrub → paraphrase → best-of-N
-    → iterative refine → burstiness → QA gate."""
+    → iterative refine → burstiness → QA gate.
+
+    Works with any OpenAI-compatible API. For OpenRouter:
+        export OPENAI_API_KEY=sk-or-v1-...
+        humanizer pipeline -f text.txt \\
+          --base-url https://openrouter.ai/api/v1 \\
+          --model openai/gpt-4o-mini
+    """
     src = _read_input(text, file)
     from .pipeline import Pipeline, PipelineConfig
     from .patterns import analyze
@@ -156,7 +167,7 @@ def pipeline(
     else:
         from .humanizers import PromptHumanizer, PromptHumanizerConfig
         from .detectors import default_ensemble
-        humanizer = PromptHumanizer(PromptHumanizerConfig(model=model))
+        humanizer = PromptHumanizer(PromptHumanizerConfig(model=model, base_url=base_url))
         ensemble = default_ensemble(lite=lite)
 
     pipe = Pipeline(humanizer=humanizer, detectors=ensemble, config=cfg)
