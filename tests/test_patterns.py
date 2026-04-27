@@ -63,3 +63,58 @@ def test_explain_renders_without_error():
     out = analyze(_AI_SAMPLE).explain()
     assert "Aggregate AI-likeness" in out
     assert "Flagged" in out
+
+
+# ---- New signals (v0.4) ----
+
+def test_abstract_subject_signal_fires():
+    """Sentences opening with abstract noun subjects."""
+    from humanizer.patterns.signals import abstract_subject_score
+    text = (
+        "The system enables productivity. The framework provides scalability. "
+        "The platform offers flexibility. The architecture supports growth. "
+        "The infrastructure handles load."
+    )
+    assert abstract_subject_score(text) > 0.7
+
+
+def test_abstract_subject_human_baseline():
+    """Concrete subjects should NOT fire."""
+    from humanizer.patterns.signals import abstract_subject_score
+    text = (
+        "I went to the store. The dog barked. We ate dinner. "
+        "She finished her book. They played outside."
+    )
+    assert abstract_subject_score(text) < 0.4
+
+
+def test_enumeration_shape_fires():
+    """Formulaic AI enumeration patterns."""
+    from humanizer.patterns.signals import enumeration_shape_score
+    text = (
+        "Whether it's machine learning or deep learning, the field grows. "
+        "It's not just about speed but also accuracy. "
+        "From software to hardware, everything matters. "
+        "Not only that, but also performance is critical."
+    )
+    assert enumeration_shape_score(text) > 0.5
+
+
+def test_modality_overload_fires():
+    """Density of must/should/ought to."""
+    from humanizer.patterns.signals import modality_overload_score
+    text = (
+        "You must adopt this technology. Companies should pivot quickly. "
+        "Workers ought to upskill. Leaders need to commit."
+    )
+    assert modality_overload_score(text) > 0.5
+
+
+def test_modality_overload_human_baseline():
+    """Declarative human writing should not fire."""
+    from humanizer.patterns.signals import modality_overload_score
+    text = (
+        "We bought new servers last week. They arrived on Tuesday. "
+        "The team installed them on Wednesday. Everything is running fine now."
+    )
+    assert modality_overload_score(text) < 0.4
