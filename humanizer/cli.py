@@ -128,6 +128,55 @@ def patterns(
     console.print(fp.explain())
 
 
+@app.command()
+def pipeline(
+    text: Optional[str] = typer.Argument(None),
+    file: Optional[Path] = typer.Option(None, "-f", "--file"),
+    model: str = typer.Option("gpt-4o-mini", "--model"),
+    n: int = typer.Option(16, "-n", help="Best-of-N candidates for selection"),
+    refine_passes: int = typer.Option(3, "--refine-passes"),
+    no_llm: bool = typer.Option(False, "--no-llm", help="Skip LLM stages — scrub + post-process only"),
+    lite: bool = typer.Option(False, "--lite", help="Use single small detector"),
+    show_trace: bool = typer.Option(False, "--trace", help="Print per-stage trace"),
+):
+    """Full multi-stage humanization pipeline: scrub → paraphrase → best-of-N
+    → iterative refine → burstiness → QA gate."""
+    src = _read_input(text, file)
+    from .pipeline import Pipeline, PipelineConfig
+    from .patterns import analyze
+
+    cfg = PipelineConfig(n_candidates=n, max_refine_passes=refine_passes)
+
+    if no_llm:
+        # Scrub + burstiness only — no API key needed.
+        cfg.do_paraphrase = False
+        cfg.do_refine = False
+        humanizer = None
+        ensemble = None
+    else:
+        from .humanizers import PromptHumanizer, PromptHumanizerConfig
+        from .detectors import default_ensemble
+        humanizer = PromptHumanizer(PromptHumanizerConfig(model=model))
+        ensemble = default_ensemble(lite=lite)
+
+    pipe = Pipeline(humanizer=humanizer, detectors=ensemble, config=cfg)
+    result = pipe.run(src)
+
+    before_pat = analyze(src).aggregate
+    after_pat = result.final_pattern or 0.0
+    console.print(
+        f"[dim]pattern aggregate {before_pat:.3f} → {after_pat:.3f}  "
+        f"(stages: {len(result.stages)})[/dim]\n"
+    )
+    if show_trace:
+        for stage in result.stages:
+            console.print(f"[bold]== {stage.name} ==[/bold]")
+            console.print(stage.text_after[:200] + ("..." if len(stage.text_after) > 200 else ""))
+            if stage.metadata:
+                console.print(f"[dim]{stage.metadata}[/dim]\n")
+    console.print(result.text)
+
+
 @app.command(name="eval")
 def eval_cmd(
     file: Path = typer.Option(..., "-f", "--file", help="JSONL with `source` field"),

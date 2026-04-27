@@ -139,8 +139,9 @@ _HEDGING_DROP = (
     "it should be noted that ",
     "it is essential to note that ",
     "it is crucial to note that ",
-    "in today's rapidly evolving ",
-    "in today's fast-paced ",
+    # Note: 'in today's rapidly evolving' / 'in today's fast-paced' are
+    # handled by PHRASE_SWAPS (substitute → 'in the modern') so the
+    # following sentence-start word doesn't become an orphan fragment.
     "in today's world, ",
     "in today's society, ",
     # Newer GPT-4/Claude tells:
