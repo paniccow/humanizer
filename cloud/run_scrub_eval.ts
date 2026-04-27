@@ -18,19 +18,35 @@ import { PodConnection } from './ssh.ts';
 const SCRUB_PY = resolve(import.meta.dir, '..', 'humanizer', 'pipeline', 'scrub.py');
 const EVAL_PY = resolve(import.meta.dir, 'scrub_score_eval.py');
 
-const EVAL_FILES_LOCAL = [
+// Static set + r5 if it exists locally. The script auto-skips missing files
+// rather than dying on a missing one, so adding r5 unconditionally is safe.
+const _ALL_EVAL_FILES_LOCAL = [
   resolve(import.meta.dir, '..', 'experiments', 'run-002-pre', 'run1_eval.json'),
   resolve(import.meta.dir, 'eval.json'),
   resolve(import.meta.dir, 'eval-r3.json'),
   resolve(import.meta.dir, 'eval-r4.json'),
+  resolve(import.meta.dir, 'eval-r5.json'),
 ];
-
-const EVAL_FILES_REMOTE = [
+const _ALL_EVAL_FILES_REMOTE = [
   '/workspace/eval_files/run1_eval.json',
   '/workspace/eval_files/run2_eval.json',
   '/workspace/eval_files/run3_eval.json',
   '/workspace/eval_files/run4_eval.json',
+  '/workspace/eval_files/run5_eval.json',
 ];
+
+// Filter to only files that exist locally — keeps the script working before
+// later runs land while still picking them up automatically when they do.
+import { statSync } from 'node:fs';
+const _existsSync = (p: string) => { try { return statSync(p).isFile(); } catch { return false; } };
+const EVAL_FILES_LOCAL: string[] = [];
+const EVAL_FILES_REMOTE: string[] = [];
+for (let i = 0; i < _ALL_EVAL_FILES_LOCAL.length; i++) {
+  if (_existsSync(_ALL_EVAL_FILES_LOCAL[i]!)) {
+    EVAL_FILES_LOCAL.push(_ALL_EVAL_FILES_LOCAL[i]!);
+    EVAL_FILES_REMOTE.push(_ALL_EVAL_FILES_REMOTE[i]!);
+  }
+}
 
 const PIP_INSTALL =
   'python -m pip install --quiet --upgrade pip wheel && ' +

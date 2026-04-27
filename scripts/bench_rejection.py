@@ -37,7 +37,10 @@ DEFAULTS = [
     ("Run #2 (Qwen-1.5B, multi-obj 2-det)",   "experiments/run-005-validation/run2_eval.scrub-eval.json"),
     ("Run #3 (Qwen-1.5B, 4-det reward)",      "experiments/run-005-validation/run3_eval.scrub-eval.json"),
     ("Run #4 (Qwen-3B, looser gate)",         "experiments/run-005-validation/run4_eval.scrub-eval.json"),
-    ("Run #5 (Qwen-1.5B, adv discriminator)", "experiments/run-005-validation/run5_eval.scrub-eval.json"),  # populated when Run #5 lands
+    # When run_scrub_eval.ts is re-run after Run #5, the scrub-eval lands at
+    # cloud/eval-r5.scrub-eval.json (next to eval-r5.json). The bench picks
+    # it up from there automatically — no manual move needed.
+    ("Run #5 (Qwen-1.5B, adv discriminator)", "cloud/eval-r5.scrub-eval.json"),
 ]
 
 
