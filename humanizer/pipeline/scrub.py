@@ -64,6 +64,9 @@ _FAVORITE_WORDS = {
     r"\s+hereby\b": "",
     r"\s+thereof\b": "",
     r"\s+thereto\b": "",
+    # Henceforth/Hitherto at sentence start: drop including trailing comma.
+    r"(?:^|(?<=[.!?])\s+)Henceforth,?\s+": " ",
+    r"(?:^|(?<=[.!?])\s+)Hitherto,?\s+": " ",
     r"\s+henceforth\s+": " ",
     r"\s+hitherto\s+": " ",
     r"\bwherein\b": "where",
