@@ -1,5 +1,66 @@
 # Changelog
 
+## v0.6 — deployable service + per-detector transparency (2026-04)
+
+The system is now deployable: a single uvicorn worker exposes the
+rejection-sampling stack as an HTTP service.
+
+### `humanizer/service/`
+
+- `POST /humanize` — `{text, max_rounds?, candidates?, threshold?}` →
+  `{text, passed, score, judge, rounds_used, judge_calls,
+   per_detector, attempts, elapsed_ms}`. Lazy init of the rejection
+  sampler + judge on first request.
+- `POST /detect` — score arbitrary text with the configured judge,
+  returns `p_ai` + per-detector breakdown. Useful for UI feedback and
+  for testing the judge config without burning an LLM generation.
+- `GET /health` — readiness probe + `paid_keys_set` list (which paid
+  APIs are configured for the auto-judge ensemble).
+- `GET /version`.
+
+Optional bearer-token auth via `HUMANIZER_API_KEY` env. Auth on
+`/humanize` and `/detect` only — health/version stay open for probes.
+
+All env-var config reads use `field(default_factory=...)` so multi-
+worker deployments and tests see fresh values, not values frozen at
+class-definition time.
+
+CLI: `humanizer serve --port 8000 [--workers N] [--reload]`. Optional
+deps: `pip install -e '.[serve]'` (FastAPI + uvicorn).
+
+### Per-detector breakdown surfaced through the rejection sampler
+
+When the judge is an `EnsembleJudge` (≥2 paid detectors), the
+rejection sampler now records per-detector scores for the chosen
+candidate in `metadata["per_detector"]`. The `/humanize` and `/detect`
+responses surface this. Lets the operator see which detector was the
+weak link and decide whether to drop one from the ensemble.
+
+### Run #5 — adversarial discriminator (in progress)
+
+Build + first-attempt failure analysis + relaunch shipped in this
+release. First attempt OOM'd at step ~150 on the second discriminator
+update (fp32 disc + 8-batch × 30-step training added ~2GB peak on a
+24GB-effective 4090). Fixes:
+- Discriminator in bf16 instead of fp32 (load_discriminator).
+- `disc_train_steps` 30 → 10, `disc_batch` 8 → 4.
+- `gc.collect()` + `torch.cuda.empty_cache()` after each disc update.
+- `set_to_none=True` on `zero_grad`.
+- `done` sentinel written after each save_every checkpoint so the
+  rescue stack can pull a partial adapter even if training dies later.
+
+Second attempt at 7.7-8.5 GB VRAM (was OOM'ing at 24GB) — comfortable
+headroom. Adversarial training stable at p_ai≈0.33 (the equilibrium
+the discriminator pushes the policy toward).
+
+### Tests
+
+82 → 94:
+- 8 service routing/auth/validation/contract tests with FastAPI
+  TestClient + stubbed humanizer.
+- 4 detect-endpoint + per-detector-breakdown tests (with-breakdown,
+  without-breakdown, auth, response shape).
+
 ## v0.5 — rejection sampling against the live judge (2026-04)
 
 The "money-back guarantee" inference layer. Single-shot ASR was the wrong

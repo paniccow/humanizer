@@ -72,6 +72,13 @@ humanizer pipeline -f input.txt --model gpt-4o-mini -n 16
 # Rejection sampling against the real-world judge (best-of-N until pass)
 export ORIGINALITY_API_KEY=...   # or GPTZERO_API_KEY / PANGRAM_API_KEY
 humanizer reject -f input.txt --judge auto -n 8 --rounds 4 --threshold 0.05
+
+# Deploy as an HTTP service
+pip install -e '.[serve]'
+humanizer serve --port 8000
+# POST /humanize  -> {text, passed, score, per_detector, ...}
+# POST /detect    -> {p_ai, judge, per_detector, ...}
+# GET  /health    -> {status, judge, paid_keys_set: [...]}
 ```
 
 ## Rejection sampling — the real-world reliability layer
