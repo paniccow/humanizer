@@ -85,6 +85,12 @@ class RejectionConfig:
     temperature_ramp: list[float] | None = field(
         default_factory=lambda: [0.85, 1.0, 1.15, 1.25]
     )
+    # Strategy carousel — list of Strategy objects (system_prompt + temperature)
+    # cycled across rounds. When set, OVERRIDES temperature_ramp (each strategy
+    # has its own temperature). Forces fundamentally different text shapes per
+    # round, not just diversity within the same shape. Higher chance of
+    # crossing Pangram's "human" boundary.
+    prompt_strategies: list | None = None  # list[Strategy]; None = no carousel
     early_exit_p_ai: float | None = 0.05
     fallback_to_best: bool = True
     # Optional fact-preservation gate. If > 0, candidates whose
@@ -107,6 +113,15 @@ def _temp_for_round(cfg: RejectionConfig, round_idx: int) -> float | None:
     if not cfg.temperature_ramp:
         return None
     return cfg.temperature_ramp[min(round_idx, len(cfg.temperature_ramp) - 1)]
+
+
+def _strategy_for_round(cfg: RejectionConfig, round_idx: int):
+    """Pick the strategy for this round (or None if no carousel configured).
+    Cycles through cfg.prompt_strategies; if max_rounds > len(strategies),
+    extra rounds repeat the last strategy."""
+    if not cfg.prompt_strategies:
+        return None
+    return cfg.prompt_strategies[min(round_idx, len(cfg.prompt_strategies) - 1)]
 
 
 class RejectionSamplingHumanizer(Humanizer):
@@ -187,8 +202,18 @@ class RejectionSamplingHumanizer(Humanizer):
 
         for round_idx in range(cfg.max_rounds):
             rounds_used = round_idx + 1
-            temp = _temp_for_round(cfg, round_idx)
-            cands = self.base.sample(text, n=cfg.candidates_per_round, temperature=temp)
+            strategy = _strategy_for_round(cfg, round_idx)
+            # Strategy carousel takes precedence: when set, the strategy's
+            # system prompt + temperature override the generic temperature ramp.
+            if strategy is not None:
+                cands = self.base.sample(
+                    text, n=cfg.candidates_per_round,
+                    temperature=strategy.temperature,
+                    system_prompt=strategy.system_prompt,
+                )
+            else:
+                temp = _temp_for_round(cfg, round_idx)
+                cands = self.base.sample(text, n=cfg.candidates_per_round, temperature=temp)
             total_attempts += len(cands)
 
             kept, sims = self._filter_by_similarity(text, cands)

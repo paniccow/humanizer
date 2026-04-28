@@ -94,16 +94,20 @@ class PromptHumanizer(Humanizer):
         n: int = 1,
         temperature: float | None = None,
         top_p: float | None = None,
+        system_prompt: str | None = None,
+        user_template: str | None = None,
     ) -> list[str]:
         # Try a single API call with n=N first (cheaper if supported).
         # Many OpenRouter routes silently return only 1 completion regardless
         # of the n parameter. If we asked for n>1 and got back fewer, fall
         # back to N independent calls.
+        sys_msg = system_prompt if system_prompt is not None else _SYSTEM_PROMPT
+        user_tmpl = user_template if user_template is not None else _USER_TEMPLATE
         params = dict(
             model=self.config.model,
             messages=[
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": _USER_TEMPLATE.format(text=text)},
+                {"role": "system", "content": sys_msg},
+                {"role": "user", "content": user_tmpl.format(text=text)},
             ],
             temperature=self.config.temperature if temperature is None else temperature,
             top_p=self.config.top_p if top_p is None else top_p,
@@ -130,8 +134,14 @@ class PromptHumanizer(Humanizer):
         *,
         temperature: float | None = None,
         top_p: float | None = None,
+        system_prompt: str | None = None,
+        user_template: str | None = None,
     ) -> list[str]:
         """Generate `n` candidate humanizations. Used by AdversarialHumanizer
-        and RejectionSamplingHumanizer. Optional temperature/top_p override
-        per call so callers can ramp diversity across rounds."""
-        return self._generate(text, n=n, temperature=temperature, top_p=top_p)
+        and RejectionSamplingHumanizer. Optional overrides per call so the
+        caller can ramp diversity across rounds (temperature, prompt strategy,
+        even the user-message wrapping)."""
+        return self._generate(
+            text, n=n, temperature=temperature, top_p=top_p,
+            system_prompt=system_prompt, user_template=user_template,
+        )

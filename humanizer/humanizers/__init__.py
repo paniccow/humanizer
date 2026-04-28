@@ -12,6 +12,14 @@ _LAZY = {
     "TrainedHumanizerConfig": (".trained", "TrainedHumanizerConfig"),
     "RejectionSamplingHumanizer": (".rejection", "RejectionSamplingHumanizer"),
     "RejectionConfig": (".rejection", "RejectionConfig"),
+    "Strategy": (".strategies", "Strategy"),
+    "ALL_STRATEGIES": (".strategies", "ALL_STRATEGIES"),
+    "DEFAULT_REWRITE": (".strategies", "DEFAULT_REWRITE"),
+    "TWEET_THREAD": (".strategies", "TWEET_THREAD"),
+    "REDDIT_POST": (".strategies", "REDDIT_POST"),
+    "SLACK_MESSAGE": (".strategies", "SLACK_MESSAGE"),
+    "DIARY_ENTRY": (".strategies", "DIARY_ENTRY"),
+    "INTERVIEW": (".strategies", "INTERVIEW"),
 }
 
 __all__ = [
@@ -20,6 +28,9 @@ __all__ = [
     "AdversarialHumanizer", "AdversarialConfig",
     "TrainedHumanizer", "TrainedHumanizerConfig",
     "RejectionSamplingHumanizer", "RejectionConfig",
+    "Strategy", "ALL_STRATEGIES",
+    "DEFAULT_REWRITE", "TWEET_THREAD", "REDDIT_POST",
+    "SLACK_MESSAGE", "DIARY_ENTRY", "INTERVIEW",
 ]
 
 

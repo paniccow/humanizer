@@ -25,14 +25,17 @@ class _StubBase(Humanizer):
 
     def __init__(self, candidates_by_round: List[List[str]]):
         self.candidates_by_round = candidates_by_round
-        self.calls: list[tuple[int, float | None]] = []  # (n, temperature)
+        # (n, temperature, system_prompt) tuples — captures kwargs the rejection
+        # sampler passed in. system_prompt is None unless strategy carousel set.
+        self.calls: list[tuple[int, float | None, str | None]] = []
         self._round = 0
 
     def humanize(self, text: str, **_) -> HumanizeResult:
         return HumanizeResult(original=text, text=self.candidates_by_round[0][0])
 
-    def sample(self, text: str, n: int, *, temperature=None, top_p=None) -> List[str]:
-        self.calls.append((n, temperature))
+    def sample(self, text: str, n: int, *, temperature=None, top_p=None,
+               system_prompt=None, user_template=None) -> List[str]:
+        self.calls.append((n, temperature, system_prompt))
         cands = self.candidates_by_round[self._round]
         self._round += 1
         return list(cands[:n])
@@ -101,7 +104,7 @@ def test_escalates_when_first_round_fails(monkeypatch):
     assert out.metadata["rounds_used"] == 2
     assert out.metadata["best_round"] == 1
     # Temperature ramp applied: round 0 = 0.85, round 1 = 1.05.
-    assert base.calls == [(2, 0.85), (2, 1.05)]
+    assert base.calls == [(2, 0.85, None), (2, 1.05, None)]
 
 
 def test_exhausted_returns_best_with_passed_false(monkeypatch):
@@ -264,6 +267,77 @@ def test_preservation_threshold_zero_is_disabled(monkeypatch):
     out = h.humanize(src)
     # With no preservation gate, the wrong-year candidate is accepted.
     assert out.text == "Founded in 1948."
+
+
+def test_strategy_carousel_overrides_temperature_ramp(monkeypatch):
+    """When prompt_strategies is set, each round uses a different system
+    prompt + temperature; temperature_ramp is ignored."""
+    from humanizer.humanizers.strategies import Strategy
+
+    _patch_similarity(monkeypatch)
+    s1 = Strategy(name="s1", system_prompt="prompt one", temperature=0.7)
+    s2 = Strategy(name="s2", system_prompt="prompt two", temperature=1.3)
+    base = _StubBase([
+        ["round1_a"],   # s1 round
+        ["round2_a"],   # s2 round (failed first; succeeds second by p_ai)
+    ])
+    judge = _StubJudge({"round1_a": 0.5, "round2_a": 0.01})
+    h = RejectionSamplingHumanizer(
+        base, judge,
+        RejectionConfig(
+            candidates_per_round=1, max_rounds=2, p_ai_threshold=0.05,
+            prompt_strategies=[s1, s2],
+            temperature_ramp=[99.0, 99.0],   # should be ignored
+        ),
+    )
+    out = h.humanize("source")
+    assert out.text == "round2_a"
+    # Round 1: temp=0.7, system="prompt one"
+    # Round 2: temp=1.3, system="prompt two"
+    assert base.calls == [
+        (1, 0.7, "prompt one"),
+        (1, 1.3, "prompt two"),
+    ]
+
+
+def test_strategy_carousel_repeats_last_strategy_when_more_rounds(monkeypatch):
+    """If max_rounds > len(strategies), extra rounds repeat the last one
+    (not crash with IndexError)."""
+    from humanizer.humanizers.strategies import Strategy
+
+    _patch_similarity(monkeypatch)
+    only = Strategy(name="only", system_prompt="prompt", temperature=1.0)
+    base = _StubBase([["a"], ["b"], ["c"]])  # 3 rounds asked, 1 strategy provided
+    judge = _StubJudge({"a": 0.5, "b": 0.5, "c": 0.5})
+    h = RejectionSamplingHumanizer(
+        base, judge,
+        RejectionConfig(
+            candidates_per_round=1, max_rounds=3, p_ai_threshold=0.05,
+            prompt_strategies=[only],
+        ),
+    )
+    h.humanize("source")
+    # All 3 rounds used the same (only) strategy
+    assert all(c == (1, 1.0, "prompt") for c in base.calls)
+
+
+def test_no_strategy_carousel_falls_back_to_temperature_ramp(monkeypatch):
+    """Default: no carousel -> temperature_ramp drives diversity, no
+    system_prompt override."""
+    _patch_similarity(monkeypatch)
+    base = _StubBase([["a"], ["b"]])
+    judge = _StubJudge({"a": 0.5, "b": 0.5})
+    h = RejectionSamplingHumanizer(
+        base, judge,
+        RejectionConfig(
+            candidates_per_round=1, max_rounds=2, p_ai_threshold=0.05,
+            temperature_ramp=[0.8, 1.1],
+            # prompt_strategies left at None default
+        ),
+    )
+    h.humanize("source")
+    # Temperature varies; system_prompt is None on every call.
+    assert base.calls == [(1, 0.8, None), (1, 1.1, None)]
 
 
 def test_metadata_contains_telemetry_fields(monkeypatch):
