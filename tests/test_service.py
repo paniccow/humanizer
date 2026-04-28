@@ -226,6 +226,89 @@ def test_detect_requires_auth(monkeypatch):
     assert r.status_code == 200
 
 
+class _StubBaseHumanizer:
+    """Drop-in for PromptHumanizer with a controllable sample()."""
+    name = "stub-base"
+    def __init__(self, candidates):
+        self.candidates = candidates
+        self.sample_calls = []
+    def humanize(self, text, **_):
+        from humanizer.humanizers.base import HumanizeResult
+        return HumanizeResult(original=text, text=self.candidates[0])
+    def sample(self, text, n, *, temperature=None, top_p=None):
+        self.sample_calls.append({"n": n, "temperature": temperature})
+        return list(self.candidates[:n])
+
+
+def test_sample_with_scoring(monkeypatch):
+    monkeypatch.delenv("HUMANIZER_API_KEY", raising=False)
+    base = _StubBaseHumanizer(["c1", "c2", "c3"])
+    judge = _StubJudgeWithBreakdown(0.0, {})
+
+    class _SeqJudge:
+        name = "seq-judge"
+        last_breakdown = {}
+        _scores = iter([0.1, 0.5, 0.9])
+        def score(self, text):
+            return next(self._scores)
+
+    seq = _SeqJudge()
+    stub = _StubRejection()
+    stub.base = base
+    stub.judge = seq
+    api = _build_app_with_stub(stub)
+    r = TestClient(api).post("/sample", json={"text": "hi", "n": 3})
+    assert r.status_code == 200
+    body = r.json()
+    assert len(body["candidates"]) == 3
+    assert [c["text"] for c in body["candidates"]] == ["c1", "c2", "c3"]
+    assert [c["p_ai"] for c in body["candidates"]] == [0.1, 0.5, 0.9]
+    assert body["judge"] == "seq-judge"
+
+
+def test_sample_no_scoring_skips_judge(monkeypatch):
+    monkeypatch.delenv("HUMANIZER_API_KEY", raising=False)
+    base = _StubBaseHumanizer(["c1", "c2"])
+
+    class _CountingJudge:
+        name = "counting"
+        def __init__(self): self.calls = 0
+        def score(self, text):
+            self.calls += 1
+            return 0.0
+
+    j = _CountingJudge()
+    stub = _StubRejection()
+    stub.base = base
+    stub.judge = j
+    api = _build_app_with_stub(stub)
+    r = TestClient(api).post("/sample", json={"text": "hi", "n": 2, "score": False})
+    assert r.status_code == 200
+    body = r.json()
+    assert all(c["p_ai"] is None for c in body["candidates"])
+    assert body["judge"] is None
+    assert j.calls == 0  # judge never called
+
+
+def test_sample_temperature_passed_through(monkeypatch):
+    monkeypatch.delenv("HUMANIZER_API_KEY", raising=False)
+    base = _StubBaseHumanizer(["a", "b"])
+
+    class _NopJudge:
+        name = "nop"
+        def score(self, text): return 0.0
+
+    stub = _StubRejection()
+    stub.base = base
+    stub.judge = _NopJudge()
+    api = _build_app_with_stub(stub)
+    r = TestClient(api).post(
+        "/sample", json={"text": "hi", "n": 2, "temperature": 1.2, "score": False},
+    )
+    assert r.status_code == 200
+    assert base.sample_calls == [{"n": 2, "temperature": 1.2}]
+
+
 def test_humanize_response_includes_per_detector_when_set(monkeypatch):
     """When the rejection sampler's metadata includes per_detector
     (because the judge is EnsembleJudge), the /humanize response

@@ -83,6 +83,25 @@ class DetectResponse(BaseModel):
     elapsed_ms: int
 
 
+class SampleRequest(BaseModel):
+    text: str = Field(..., min_length=1)
+    n: int = Field(8, ge=1, le=16, description="Number of candidates to generate.")
+    temperature: Optional[float] = Field(None, ge=0.0, le=2.0)
+    score: bool = Field(True, description="Score each candidate via the judge.")
+
+
+class CandidateScore(BaseModel):
+    text: str
+    p_ai: Optional[float] = None
+    per_detector: Optional[dict] = None
+
+
+class SampleResponse(BaseModel):
+    candidates: List[CandidateScore]
+    judge: Optional[str] = None
+    elapsed_ms: int
+
+
 class HealthResponse(BaseModel):
     status: str
     model: str
@@ -212,6 +231,42 @@ def build_app(config: Optional[ServiceConfig] = None) -> FastAPI:
             judge_calls=meta.get("judge_calls"),
             per_detector=meta.get("per_detector"),
             attempts=result.attempts,
+            elapsed_ms=elapsed_ms,
+        )
+
+    @api.post("/sample", response_model=SampleResponse)
+    async def sample(req: SampleRequest, authorization: Optional[str] = Header(None)):
+        """Generate N humanization candidates and (optionally) score each.
+        Useful for product UI flows that let the user pick their favorite
+        from a slate of options. No rejection threshold applied — caller
+        decides what to do with the scores.
+        """
+        _check_auth(state, authorization)
+        if len(req.text) > cfg.max_chars:
+            raise HTTPException(
+                status_code=413,
+                detail=f"text exceeds max_chars={cfg.max_chars}",
+            )
+        rejection = state.get_humanizer()
+        base = rejection.base
+        judge = rejection.judge
+
+        t0 = time.time()
+        cands = base.sample(req.text, n=req.n, temperature=req.temperature)
+        candidates: List[CandidateScore] = []
+        if req.score:
+            for c in cands:
+                p = float(judge.score(c))
+                bd = getattr(judge, "last_breakdown", None)
+                candidates.append(CandidateScore(
+                    text=c, p_ai=p, per_detector=dict(bd) if bd else None,
+                ))
+        else:
+            candidates = [CandidateScore(text=c) for c in cands]
+        elapsed_ms = int((time.time() - t0) * 1000)
+        return SampleResponse(
+            candidates=candidates,
+            judge=judge.name if req.score else None,
             elapsed_ms=elapsed_ms,
         )
 
