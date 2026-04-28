@@ -184,6 +184,12 @@ def build_app(config: Optional[ServiceConfig] = None) -> FastAPI:
     api = FastAPI(title="humanizer", version="0.5.0")
     api.state.svc = state
 
+    # Optional: attach JSONL telemetry middleware if HUMANIZER_TELEMETRY_PATH
+    # is set. No-op when unset — zero overhead in dev/test by default.
+    if os.environ.get("HUMANIZER_TELEMETRY_PATH"):
+        from .telemetry import TelemetryMiddleware
+        api.add_middleware(TelemetryMiddleware)
+
     @api.get("/health", response_model=HealthResponse)
     async def health():
         from ..detectors import available_paid_detectors

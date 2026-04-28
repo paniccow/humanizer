@@ -4,6 +4,8 @@ auth, and the response-shape contract.
 """
 from __future__ import annotations
 
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -307,6 +309,66 @@ def test_sample_temperature_passed_through(monkeypatch):
     )
     assert r.status_code == 200
     assert base.sample_calls == [{"n": 2, "temperature": 1.2}]
+
+
+def test_telemetry_writes_jsonl(monkeypatch, tmp_path):
+    """When HUMANIZER_TELEMETRY_PATH is set, every /humanize request
+    appends a JSONL record with timing + judge_calls + cost estimate."""
+    log_file = tmp_path / "telemetry.jsonl"
+    monkeypatch.delenv("HUMANIZER_API_KEY", raising=False)
+    monkeypatch.setenv("HUMANIZER_TELEMETRY_PATH", str(log_file))
+    monkeypatch.setenv("HUMANIZER_LLM_COST", "0.001")
+    monkeypatch.setenv("HUMANIZER_JUDGE_COST", "0.003")
+
+    stub = _StubRejection(text="OUT", passed=True, score=0.02)
+    api = _build_app_with_stub(stub)
+    client = TestClient(api)
+    r = client.post("/humanize", json={"text": "test"})
+    assert r.status_code == 200
+
+    assert log_file.exists()
+    lines = [json.loads(l) for l in log_file.read_text().splitlines() if l]
+    assert len(lines) == 1
+    rec = lines[0]
+    assert rec["path"] == "/humanize"
+    assert rec["status"] == 200
+    assert rec["attempts"] == 8
+    assert rec["judge_calls"] == 8
+    assert rec["passed"] is True
+    assert rec["score"] == 0.02
+    # 8 attempts × $0.001 + 8 judge_calls × $0.003 = $0.032
+    assert rec["cost_estimate_usd"] == pytest.approx(0.032, rel=0.01)
+    assert rec["elapsed_ms"] >= 0
+
+
+def test_telemetry_disabled_by_default(monkeypatch, tmp_path):
+    """No HUMANIZER_TELEMETRY_PATH => no log file, no overhead."""
+    monkeypatch.delenv("HUMANIZER_TELEMETRY_PATH", raising=False)
+    monkeypatch.delenv("HUMANIZER_API_KEY", raising=False)
+    stub = _StubRejection()
+    api = _build_app_with_stub(stub)
+    r = TestClient(api).post("/humanize", json={"text": "x"})
+    assert r.status_code == 200
+    log_file = tmp_path / "telemetry.jsonl"
+    assert not log_file.exists()
+
+
+def test_telemetry_logs_errors_too(monkeypatch, tmp_path):
+    """4xx responses are logged with error field set."""
+    log_file = tmp_path / "telemetry.jsonl"
+    monkeypatch.delenv("HUMANIZER_API_KEY", raising=False)
+    monkeypatch.setenv("HUMANIZER_TELEMETRY_PATH", str(log_file))
+    monkeypatch.setenv("HUMANIZER_MAX_CHARS", "10")
+
+    from humanizer.service.app import ServiceConfig, build_app
+    api = build_app(ServiceConfig())
+    api.state.svc.get_humanizer = lambda: _StubRejection()
+    r = TestClient(api).post("/humanize", json={"text": "way too long input"})
+    assert r.status_code == 413
+
+    rec = json.loads(log_file.read_text().splitlines()[0])
+    assert rec["status"] == 413
+    assert rec["error"] == "http_413"
 
 
 def test_humanize_response_includes_per_detector_when_set(monkeypatch):
