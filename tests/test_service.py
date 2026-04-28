@@ -1,0 +1,166 @@
+"""HTTP service tests with FastAPI TestClient + a stubbed rejection
+sampler. No real LLM, no real detector — verifies routing, validation,
+auth, and the response-shape contract.
+"""
+from __future__ import annotations
+
+import pytest
+from fastapi.testclient import TestClient
+
+from humanizer.humanizers.base import HumanizeResult
+
+
+class _StubRejection:
+    """Drop-in for RejectionSamplingHumanizer.humanize()."""
+
+    def __init__(self, text="OUT", passed=True, score=0.01):
+        self._text = text
+        self._passed = passed
+        self._score = score
+        self.config = type("Cfg", (), {
+            "max_rounds": 4, "candidates_per_round": 8,
+            "p_ai_threshold": 0.05, "similarity_threshold": 0.78,
+        })()
+        self.last_overrides: dict = {}
+
+    def humanize(self, text, **_):
+        # Capture knob overrides applied by the endpoint for test assertions
+        self.last_overrides = {
+            "max_rounds": self.config.max_rounds,
+            "candidates_per_round": self.config.candidates_per_round,
+            "p_ai_threshold": self.config.p_ai_threshold,
+        }
+        return HumanizeResult(
+            original=text,
+            text=self._text,
+            score=self._score,
+            attempts=8,
+            metadata={
+                "passed": self._passed,
+                "judge": "stub",
+                "judge_calls": 8,
+                "rounds_used": 1 if self._passed else 4,
+                "best_p_ai": self._score,
+            },
+        )
+
+
+def _build_app_with_stub(stub: _StubRejection, monkeypatch=None, env=None):
+    if monkeypatch and env:
+        for k, v in env.items():
+            if v is None:
+                monkeypatch.delenv(k, raising=False)
+            else:
+                monkeypatch.setenv(k, v)
+    from humanizer.service.app import ServiceConfig, build_app
+    api = build_app(ServiceConfig())
+    api.state.svc.get_humanizer = lambda: stub
+    api.state.svc._judge_resolved_name = "stub"
+    return api
+
+
+def test_humanize_pass(monkeypatch):
+    monkeypatch.delenv("HUMANIZER_API_KEY", raising=False)
+    stub = _StubRejection(text="rewritten", passed=True, score=0.02)
+    api = _build_app_with_stub(stub, monkeypatch, {"HUMANIZER_API_KEY": None})
+    client = TestClient(api)
+    r = client.post("/humanize", json={"text": "Furthermore, leverage AI."})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["text"] == "rewritten"
+    assert body["passed"] is True
+    assert body["score"] == 0.02
+    assert body["judge"] == "stub"
+    assert body["attempts"] == 8
+    assert body["elapsed_ms"] >= 0
+
+
+def test_humanize_exhausted(monkeypatch):
+    monkeypatch.delenv("HUMANIZER_API_KEY", raising=False)
+    stub = _StubRejection(text="best_we_got", passed=False, score=0.4)
+    api = _build_app_with_stub(stub)
+    r = TestClient(api).post("/humanize", json={"text": "hi"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["passed"] is False
+    assert body["text"] == "best_we_got"
+    assert body["rounds_used"] == 4
+
+
+def test_humanize_overrides_apply_to_config(monkeypatch):
+    monkeypatch.delenv("HUMANIZER_API_KEY", raising=False)
+    stub = _StubRejection()
+    api = _build_app_with_stub(stub)
+    r = TestClient(api).post("/humanize", json={
+        "text": "hi", "max_rounds": 2, "candidates": 4, "threshold": 0.1,
+    })
+    assert r.status_code == 200
+    assert stub.last_overrides == {
+        "max_rounds": 2, "candidates_per_round": 4, "p_ai_threshold": 0.1,
+    }
+
+
+def test_humanize_rejects_oversized_input(monkeypatch):
+    # Env vars are read at build_app() time, so set BEFORE building.
+    monkeypatch.delenv("HUMANIZER_API_KEY", raising=False)
+    monkeypatch.setenv("HUMANIZER_MAX_CHARS", "100")
+    from humanizer.service.app import ServiceConfig, build_app
+    api = build_app(ServiceConfig())
+    api.state.svc.get_humanizer = lambda: _StubRejection()
+    r = TestClient(api).post("/humanize", json={"text": "x" * 200})
+    assert r.status_code == 413
+    assert "max_chars" in r.json()["detail"]
+
+
+def test_humanize_validates_empty_text(monkeypatch):
+    monkeypatch.delenv("HUMANIZER_API_KEY", raising=False)
+    stub = _StubRejection()
+    api = _build_app_with_stub(stub)
+    r = TestClient(api).post("/humanize", json={"text": ""})
+    assert r.status_code == 422  # pydantic min_length=1 violation
+
+
+def test_auth_required_when_env_set(monkeypatch):
+    monkeypatch.setenv("HUMANIZER_API_KEY", "secret-token")
+    stub = _StubRejection()
+    api = _build_app_with_stub(stub)
+    client = TestClient(api)
+
+    # No auth header -> 401
+    r = client.post("/humanize", json={"text": "hi"})
+    assert r.status_code == 401
+
+    # Wrong token -> 401
+    r = client.post(
+        "/humanize", json={"text": "hi"},
+        headers={"Authorization": "Bearer wrong"},
+    )
+    assert r.status_code == 401
+
+    # Right token -> 200
+    r = client.post(
+        "/humanize", json={"text": "hi"},
+        headers={"Authorization": "Bearer secret-token"},
+    )
+    assert r.status_code == 200
+
+
+def test_health_does_not_require_auth(monkeypatch):
+    monkeypatch.setenv("HUMANIZER_API_KEY", "secret-token")
+    stub = _StubRejection()
+    api = _build_app_with_stub(stub)
+    r = TestClient(api).get("/health")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] in ("ready", "cold")
+    assert "judge" in body
+    assert "paid_keys_set" in body
+
+
+def test_version_endpoint(monkeypatch):
+    monkeypatch.delenv("HUMANIZER_API_KEY", raising=False)
+    stub = _StubRejection()
+    api = _build_app_with_stub(stub)
+    r = TestClient(api).get("/version")
+    assert r.status_code == 200
+    assert r.json()["name"] == "humanizer"

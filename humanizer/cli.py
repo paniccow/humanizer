@@ -352,6 +352,32 @@ def eval_cmd(
         console.print(f"\nSamples written to {out}")
 
 
+@app.command()
+def serve(
+    host: str = typer.Option("0.0.0.0", "--host"),
+    port: int = typer.Option(8000, "--port"),
+    workers: int = typer.Option(1, "--workers"),
+    reload: bool = typer.Option(False, "--reload", help="Auto-reload on code changes (dev only)"),
+):
+    """Start the FastAPI service. Wraps the rejection sampler.
+
+    Required env: OPENAI_API_KEY (OpenAI or OpenRouter).
+    Optional env: ORIGINALITY_API_KEY / PANGRAM_API_KEY / GPTZERO_API_KEY
+    for paid-detector judge (default --judge auto picks them up).
+    Set HUMANIZER_API_KEY to require bearer-token auth.
+    """
+    try:
+        import uvicorn
+    except ImportError:
+        raise typer.BadParameter(
+            "uvicorn not installed. Install with: pip install -e '.[serve]'"
+        )
+    uvicorn.run(
+        "humanizer.service.app:app",
+        host=host, port=port, workers=workers, reload=reload,
+    )
+
+
 @app.command(name="prepare-data")
 def prepare_data_cmd(
     n: int = typer.Option(200, "-n"),

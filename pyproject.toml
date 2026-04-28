@@ -36,7 +36,8 @@ train = [
     "wandb>=0.18",
 ]
 openai = ["openai>=1.40"]
-dev = ["pytest>=8.0", "ruff>=0.6"]
+serve = ["fastapi>=0.110", "uvicorn[standard]>=0.27"]
+dev = ["pytest>=8.0", "ruff>=0.6", "httpx>=0.27"]
 
 [project.scripts]
 humanizer = "humanizer.cli:app"
