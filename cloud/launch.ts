@@ -92,9 +92,19 @@ async function kickOffTraining(conn: PodConnection): Promise<void> {
   if (sanity.code !== 0) throw new Error(`sanity import failed:\n${sanity.stderr}`);
 
   console.log('> launching training under nohup setsid (disconnect-safe)...');
+  // Forward selected env vars to the pod's training process. PANGRAM_API_KEY
+  // is required by train_v6 (Pangram in the reward loop). Future vars like
+  // ORIGINALITY_API_KEY would land here too. Any value with single-quotes
+  // would break the wrapping; we don't expect that for API keys (UUID-like).
+  const forwardedEnv: string[] = [];
+  for (const k of ['PANGRAM_API_KEY', 'ORIGINALITY_API_KEY', 'GPTZERO_API_KEY', 'OPENAI_API_KEY']) {
+    const v = process.env[k];
+    if (v) forwardedEnv.push(`export ${k}='${v}'`);
+  }
+  const envPrefix = forwardedEnv.length ? forwardedEnv.join('; ') + '; ' : '';
   const launch = await conn.run(
     `cd /workspace && rm -f output/done && ` +
-      `nohup setsid bash -c 'python -u code/train.py > output/run.log 2>&1; ` +
+      `nohup setsid bash -c '${envPrefix}python -u code/train.py > output/run.log 2>&1; ` +
       `if [ -f output/done ]; then echo OK; else echo FAILED > output/run_status; fi' ` +
       `> /dev/null 2>&1 < /dev/null & echo $! > output/training.pid && sleep 2`,
   );
