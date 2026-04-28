@@ -92,14 +92,24 @@ async function kickOffTraining(conn: PodConnection): Promise<void> {
   if (sanity.code !== 0) throw new Error(`sanity import failed:\n${sanity.stderr}`);
 
   console.log('> launching training under nohup setsid (disconnect-safe)...');
-  // Forward selected env vars to the pod's training process. PANGRAM_API_KEY
-  // is required by train_v6 (Pangram in the reward loop). Future vars like
-  // ORIGINALITY_API_KEY would land here too. Any value with single-quotes
-  // would break the wrapping; we don't expect that for API keys (UUID-like).
+  // Forward selected env vars to the pod's training process.
+  //   - paid-detector keys: required by train_v6 (Pangram in reward loop)
+  //   - HUMANIZER_*: training knobs read by the pod-side script (TRAIN_N,
+  //     PANGRAM_EVERY, etc.) — these were silently dropped before, causing
+  //     a run to go full 1200 steps instead of the requested 400.
+  // Any value with single-quotes would break the wrapping; API keys are
+  // UUID-shaped and HUMANIZER_* values are ints/strs we control.
   const forwardedEnv: string[] = [];
-  for (const k of ['PANGRAM_API_KEY', 'ORIGINALITY_API_KEY', 'GPTZERO_API_KEY', 'OPENAI_API_KEY']) {
+  for (const k of Object.keys(process.env)) {
     const v = process.env[k];
-    if (v) forwardedEnv.push(`export ${k}='${v}'`);
+    if (!v) continue;
+    if (
+      k === 'PANGRAM_API_KEY' || k === 'ORIGINALITY_API_KEY' ||
+      k === 'GPTZERO_API_KEY' || k === 'OPENAI_API_KEY' ||
+      k.startsWith('HUMANIZER_')
+    ) {
+      forwardedEnv.push(`export ${k}='${v}'`);
+    }
   }
   const envPrefix = forwardedEnv.length ? forwardedEnv.join('; ') + '; ' : '';
   const launch = await conn.run(
