@@ -102,10 +102,10 @@ class Cfg:
     # Adversarial discriminator settings:
     disc_init_id: str = "openai-community/roberta-base-openai-detector"
     disc_update_every: int = 50          # update discriminator every N policy steps
-    disc_train_steps: int = 30           # mini-batches per update
+    disc_train_steps: int = 10           # mini-batches per update (was 30; OOM on 4090)
     disc_lr: float = 2e-5
     disc_window: int = 200               # rolling window of recent (ai, human) pairs
-    disc_batch: int = 8                  # mini-batch size for disc training
+    disc_batch: int = 4                  # mini-batch size for disc training (was 8; OOM)
     n_train_prompts: int = int(os.environ.get("HUMANIZER_TRAIN_N", 1200))
     n_eval_prompts: int = int(os.environ.get("HUMANIZER_EVAL_N", 30))
     min_words: int = 60
@@ -299,12 +299,17 @@ def load_human_samples(cfg: Cfg, n: int) -> list[str]:
 
 def load_discriminator(cfg: Cfg):
     """Load a fresh trainable RoBERTa-base classifier, warm-started from the
-    OpenAI detector weights. Will be updated every cfg.disc_update_every steps."""
+    OpenAI detector weights. Will be updated every cfg.disc_update_every steps.
+
+    Loaded in bf16 (was fp32 in the first attempt — OOM'd at the second disc
+    update on 24GB 4090 due to ~2GB peak from model + grads + AdamW state).
+    bf16 halves all four. Discriminator stability over only 10 minibatches
+    per update is fine in bf16."""
     import torch
     from transformers import AutoModelForSequenceClassification, AutoTokenizer
-    print(f"[disc] init from {cfg.disc_init_id} (trainable)", flush=True)
+    print(f"[disc] init from {cfg.disc_init_id} (trainable, bf16)", flush=True)
     d = AutoModelForSequenceClassification.from_pretrained(
-        cfg.disc_init_id, torch_dtype=torch.float32, ignore_mismatched_sizes=True
+        cfg.disc_init_id, torch_dtype=torch.bfloat16, ignore_mismatched_sizes=True
     ).cuda().train()
     # All params trainable for the discriminator (unlike frozen detectors)
     for p in d.parameters():
@@ -321,7 +326,14 @@ def load_discriminator(cfg: Cfg):
 
 def update_discriminator(disc, disc_tok, disc_optim, ai_texts, human_texts, cfg):
     """Run a few mini-batches of supervised training on the discriminator.
-    Positive class (AI) = recent policy outputs. Negative class (human) = real."""
+    Positive class (AI) = recent policy outputs. Negative class (human) = real.
+
+    Aggressive memory hygiene: shorter max_length (was 512 -> 256, since most
+    eval prompts produce <200 tokens), explicit del + empty_cache after each
+    minibatch, empty_cache + gc.collect at end. The first attempt at this
+    function OOM'd at the second update — bf16 model + these changes plus
+    smaller batch/steps fit comfortably in 24GB."""
+    import gc
     import random as _r
     import torch
     import torch.nn.functional as F
@@ -336,20 +348,22 @@ def update_discriminator(disc, disc_tok, disc_optim, ai_texts, human_texts, cfg)
     for step in range(cfg.disc_train_steps):
         batch = rng.sample(pairs, k=min(cfg.disc_batch, len(pairs)))
         texts = [p[0] for p in batch]
-        labels = torch.tensor([p[1] for p in batch], device="cuda")
-        enc = disc_tok(texts, return_tensors="pt", truncation=True, padding=True, max_length=512).to("cuda")
-        logits = disc(**enc).logits
-        # The label-index for the AI class might not be 1 in id2label; adjust.
-        # Since we warm-started from the OpenAI detector where AI = "fake" class,
-        # we computed ai_idx earlier. Map our 0/1 labels accordingly.
-        # Simplest: use binary cross-entropy on the AI-class logit.
+        labels = torch.tensor([p[1] for p in batch], device="cuda", dtype=torch.float32)
+        enc = disc_tok(
+            texts, return_tensors="pt", truncation=True, padding=True, max_length=256,
+        ).to("cuda")
+        logits = disc(**enc).logits.float()  # cast to fp32 for loss numeric stability
         ai_logits = logits[:, 1] if logits.shape[1] > 1 else logits.squeeze(-1)
-        loss = F.binary_cross_entropy_with_logits(ai_logits, labels.float())
-        disc_optim.zero_grad()
+        loss = F.binary_cross_entropy_with_logits(ai_logits, labels)
+        disc_optim.zero_grad(set_to_none=True)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(disc.parameters(), 1.0)
         disc_optim.step()
+        del enc, logits, ai_logits, loss, labels
     disc.eval()
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 def load_detectors(cfg: Cfg):
@@ -621,8 +635,15 @@ def train(cfg: Cfg) -> tuple[list[str], list[dict]]:
 
         if (step + 1) % cfg.save_every == 0:
             policy.save_pretrained(str(ADAPTER_DIR))
+            tokenizer.save_pretrained(str(ADAPTER_DIR))
             LOG_PATH.write_text(json.dumps(log_lines, indent=2))
-            print(f"  [checkpoint at step {step+1}]", flush=True)
+            # Touch the `done` sentinel after the first checkpoint so the
+            # rescue stack can pull a partial adapter if training dies later.
+            # Subsequent active_rescue pulls are no-ops (it exits on first
+            # pull), but cost_cap's 7h watchdog will scp the LATEST in-pod
+            # adapter at cap time, which by then is the final state.
+            DONE_PATH.touch()
+            print(f"  [checkpoint at step {step+1}; done sentinel touched]", flush=True)
 
     policy.save_pretrained(str(ADAPTER_DIR))
     tokenizer.save_pretrained(str(ADAPTER_DIR))
