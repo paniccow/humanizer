@@ -207,6 +207,12 @@ def build_app(config: Optional[ServiceConfig] = None) -> FastAPI:
         from .telemetry import TelemetryMiddleware
         api.add_middleware(TelemetryMiddleware)
 
+    # Optional: per-IP rate limit if HUMANIZER_RATE_LIMIT="60/minute" etc.
+    # Skipped on /health and /version.
+    if os.environ.get("HUMANIZER_RATE_LIMIT"):
+        from .ratelimit import RateLimitMiddleware
+        api.add_middleware(RateLimitMiddleware)
+
     @api.get("/health", response_model=HealthResponse)
     async def health():
         from ..detectors import available_paid_detectors

@@ -311,6 +311,58 @@ def test_sample_temperature_passed_through(monkeypatch):
     assert base.sample_calls == [{"n": 2, "temperature": 1.2}]
 
 
+def test_rate_limit_blocks_after_threshold(monkeypatch):
+    """3-per-second rate limit returns 429 on the 4th hit, with
+    Retry-After header. /health stays open."""
+    monkeypatch.delenv("HUMANIZER_API_KEY", raising=False)
+    monkeypatch.setenv("HUMANIZER_RATE_LIMIT", "3/second")
+    monkeypatch.delenv("HUMANIZER_TELEMETRY_PATH", raising=False)
+
+    from humanizer.service.app import ServiceConfig, build_app
+    api = build_app(ServiceConfig())
+    api.state.svc.get_humanizer = lambda: _StubRejection()
+    client = TestClient(api)
+
+    # First 3 succeed
+    for _ in range(3):
+        r = client.post("/humanize", json={"text": "x"})
+        assert r.status_code == 200, r.text
+        assert r.headers.get("X-RateLimit-Limit") == "3"
+
+    # 4th is rate-limited
+    r = client.post("/humanize", json={"text": "x"})
+    assert r.status_code == 429
+    assert "retry" in r.json()["detail"].lower()
+    assert int(r.headers["Retry-After"]) >= 1
+    assert r.headers["X-RateLimit-Remaining"] == "0"
+
+    # /health bypass — not rate limited
+    r = client.get("/health")
+    assert r.status_code == 200
+
+
+def test_rate_limit_disabled_by_default(monkeypatch):
+    monkeypatch.delenv("HUMANIZER_API_KEY", raising=False)
+    monkeypatch.delenv("HUMANIZER_RATE_LIMIT", raising=False)
+    stub = _StubRejection()
+    api = _build_app_with_stub(stub)
+    client = TestClient(api)
+    # 20 calls in a row, all succeed
+    for _ in range(20):
+        assert client.post("/humanize", json={"text": "x"}).status_code == 200
+
+
+def test_parse_rate_spec():
+    from humanizer.service.ratelimit import parse_rate
+    assert parse_rate("60/minute") == (60, 60)
+    assert parse_rate("1000/hour") == (1000, 3600)
+    assert parse_rate("10/s") == (10, 1)
+    with pytest.raises(ValueError):
+        parse_rate("bad spec")
+    with pytest.raises(ValueError):
+        parse_rate("60/decade")
+
+
 def test_telemetry_writes_jsonl(monkeypatch, tmp_path):
     """When HUMANIZER_TELEMETRY_PATH is set, every /humanize request
     appends a JSONL record with timing + judge_calls + cost estimate."""
