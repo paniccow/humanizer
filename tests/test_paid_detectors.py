@@ -136,13 +136,47 @@ def test_originality_no_key_raises(monkeypatch):
 
 # ---------- Pangram ----------
 
-def test_pangram_ai_likelihood(monkeypatch):
+def test_pangram_v3_fraction_ai(monkeypatch):
+    """Real v3 response shape — fraction_ai is the canonical p_ai."""
     from humanizer.detectors import pangram as p_mod
-    payload = {"predicted_class": "ai", "ai_likelihood": 0.88}
+    payload = {
+        "text": "...", "version": "v3", "headline": "Likely AI",
+        "prediction_short": "AI", "fraction_ai": 0.92,
+        "fraction_ai_assisted": 0.04, "fraction_human": 0.04,
+        "num_ai_segments": 3, "windows": [],
+    }
     with _stub_urlopen(monkeypatch, p_mod, payload) as cap:
         d = PangramDetector(api_key="pgr")
-        assert d.score("hi") == pytest.approx(0.88)
+        # 0.92 + 0.5 * 0.04 = 0.94
+        assert d.score("hi") == pytest.approx(0.94)
     assert cap["body"] == {"text": "hi"}
+    # Endpoint sanity: must be the actual prod URL, not the older guess.
+    assert cap["url"] == "https://text.api.pangramlabs.com/v3"
+
+
+def test_pangram_v3_pure_ai_no_assisted(monkeypatch):
+    from humanizer.detectors import pangram as p_mod
+    payload = {"fraction_ai": 1.0, "fraction_ai_assisted": 0.0, "fraction_human": 0.0}
+    with _stub_urlopen(monkeypatch, p_mod, payload):
+        d = PangramDetector(api_key="k")
+        assert d.score("x") == pytest.approx(1.0)
+
+
+def test_pangram_v3_fully_human(monkeypatch):
+    from humanizer.detectors import pangram as p_mod
+    payload = {"fraction_ai": 0.0, "fraction_ai_assisted": 0.0, "fraction_human": 1.0}
+    with _stub_urlopen(monkeypatch, p_mod, payload):
+        d = PangramDetector(api_key="k")
+        assert d.score("x") == pytest.approx(0.0)
+
+
+def test_pangram_legacy_ai_likelihood_still_supported(monkeypatch):
+    """Older / SDK shapes still parse — useful if endpoint config is overridden."""
+    from humanizer.detectors import pangram as p_mod
+    payload = {"predicted_class": "ai", "ai_likelihood": 0.88}
+    with _stub_urlopen(monkeypatch, p_mod, payload):
+        d = PangramDetector(api_key="pgr")
+        assert d.score("hi") == pytest.approx(0.88)
 
 
 def test_pangram_class_probabilities(monkeypatch):
@@ -176,7 +210,7 @@ def test_pangram_unknown_schema_raises(monkeypatch):
     payload = {"unexpected": "shape"}
     with _stub_urlopen(monkeypatch, p_mod, payload):
         d = PangramDetector(api_key="k")
-        with pytest.raises(RuntimeError, match="missing AI-likelihood"):
+        with pytest.raises(RuntimeError, match="missing fraction_ai"):
             d.score("x")
 
 

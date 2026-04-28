@@ -9,8 +9,10 @@ no framework. Just static `index.html` that hits a running service.
 # 1. Start the service in one terminal
 export OPENAI_API_KEY=sk-or-v1-...      # OpenRouter or OpenAI
 export OPENAI_BASE_URL=https://openrouter.ai/api/v1   # if OpenRouter
-# Optional: paid judges
-export ORIGINALITY_API_KEY=...
+# Optional: paid judges (any combination — auto-judge ensembles them)
+export PANGRAM_API_KEY=...        # cheapest, $0.05/1K words
+export ORIGINALITY_API_KEY=...    # $14.95/mo flat
+export GPTZERO_API_KEY=...        # $135/mo, more expensive but the brand-name one
 # Required for the demo: allow CORS from the static-server origin
 export HUMANIZER_CORS_ORIGINS="http://localhost:7000"
 humanizer serve --port 8000

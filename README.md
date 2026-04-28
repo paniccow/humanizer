@@ -105,9 +105,23 @@ none pass, ramp temperature and retry. With `--judge auto` it picks up
 whichever paid keys you have set and ensembles them; with no keys set
 it falls back to the local RoBERTa-large open detector.
 
-Cost with Originality.ai ($14.95/mo / 3M words):
-- Typical (passes round 1): ~3¢ per humanization.
-- Worst case (4 rounds × 8 candidates): ~13¢.
+**Picking a paid judge.** All three are wired up — `--judge auto`
+ensembles whichever you have keys for:
+
+| | endpoint | pricing | response shape | self-serve? |
+|---|---|---|---|---|
+| Pangram | `text.api.pangramlabs.com/v3` | $0.05/1K words ≈ 1¢/200-word req | `fraction_ai + fraction_ai_assisted` | yes (dashboard) |
+| Originality.ai | `api.originality.ai/v1/scan/ai` | $14.95/mo for 3M words | `score.ai` | yes |
+| GPTZero | `api.gptzero.me/v2/predict/text` | $135/mo for 1M words | `class_probabilities {ai, mixed, human}` | yes |
+
+Pangram is currently the cheapest credit-based option and has strong
+reported accuracy on academic-style long-form text. Get a key at
+[pangram.com](https://pangram.com) → dashboard → API.
+
+Cost (Pangram, single-judge):
+- Typical (passes round 1): ~9¢ per humanization (8 LLM gens at
+  $0.001 + 8 judge calls at $0.01 each)
+- Worst case (4 rounds × 8 candidates): ~36¢
 
 Turnitin has no public API. Use `--judge roberta` as a proxy
 (RoBERTa-large-openai correlates ~0.7 with Turnitin's signal in

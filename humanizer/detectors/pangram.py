@@ -1,23 +1,34 @@
 """Pangram (pangramlabs) API detector.
 
-Wraps Pangram's text-classification endpoint. Pangram is a relatively
-new entrant in 2024-2025 with strong reported accuracy on long-form
-academic-style text. API access is paid; pricing on request via
-https://www.pangram.com/api .
+Wraps Pangram's text-classification v3 endpoint. Pangram is a 2024-
+entrant with strong reported accuracy on long-form academic-style
+text. Self-serve credit-based pricing (no enterprise contract needed
+for low volumes): roughly $0.05 per 1,000 words = $0.00005/word, so
+a 200-word humanization costs ~$0.01.
 
-Endpoint (per public docs as of Apr 2026):
-  POST https://api.pangram.com/v1/classify/text
+Get a key: https://pangram.com → sign up → dashboard → API section.
+
+Endpoint (verified Apr 2026 against https://docs.pangram.com/api-reference/ai-detection):
+  POST https://text.api.pangramlabs.com/v3
   header: x-api-key
   body:   { "text": "..." }
   resp:   {
-            "predicted_class": "ai" | "human" | "mixed",
-            "ai_likelihood": 0.0..1.0,
+            "text": "...",
+            "version": "...",
+            "headline": "...",
+            "prediction": "...",
+            "prediction_short": "AI" | "AI-Assisted" | "Human" | "Mixed",
+            "fraction_ai": 0.0..1.0,            <-- canonical p_ai source
+            "fraction_ai_assisted": 0.0..1.0,
+            "fraction_human": 0.0..1.0,
+            "num_ai_segments": int,
             ...
+            "windows": [ ... per-paragraph breakdown ... ]
           }
 
-The exact response shape may evolve — _extract_p_ai tolerates both
-`ai_likelihood` and `ai_probability` and `confidence` for class=ai.
-Adjust _extract_p_ai if your subscription returns a different shape.
+We compute p_ai = fraction_ai + 0.5 * fraction_ai_assisted (treating
+"AI-assisted" as half-AI, matching the conservative aggregation we use
+elsewhere). Override mixed_weight in the config to adjust.
 """
 from __future__ import annotations
 
@@ -34,10 +45,14 @@ from .base import Detector
 @dataclass
 class PangramConfig:
     api_key_env: str = "PANGRAM_API_KEY"
-    endpoint: str = "https://api.pangram.com/v1/classify/text"
+    endpoint: str = "https://text.api.pangramlabs.com/v3"
     timeout_s: float = 30.0
     retries: int = 2
     retry_backoff_s: float = 1.5
+    # AI-assisted weight in the aggregate: how much of fraction_ai_assisted
+    # to count toward p_ai. 0.5 = treat as half-AI (default). 1.0 = treat
+    # as fully AI (strict). 0.0 = ignore (loose).
+    ai_assisted_weight: float = 0.5
 
 
 class PangramDetector(Detector):
@@ -81,28 +96,27 @@ class PangramDetector(Detector):
         )
 
     @staticmethod
-    def _extract_p_ai(payload: dict) -> float:
-        # Common shapes — tolerate all of them.
+    def _extract_p_ai(payload: dict, ai_assisted_weight: float = 0.5) -> float:
+        # Canonical v3 shape: fraction_ai + fraction_ai_assisted.
+        if "fraction_ai" in payload:
+            ai = float(payload["fraction_ai"])
+            assisted = float(payload.get("fraction_ai_assisted", 0.0))
+            return min(1.0, max(0.0, ai + ai_assisted_weight * assisted))
+        # Legacy / SDK shapes — tolerate them in case of older endpoint.
         for k in ("ai_likelihood", "ai_probability", "ai_score"):
             if k in payload:
                 return float(payload[k])
-        # Class-probability style response.
         probs = payload.get("class_probabilities") or {}
         if probs:
-            ai = float(probs.get("ai", 0.0))
-            mixed = float(probs.get("mixed", 0.0))
-            return min(1.0, max(0.0, ai + 0.5 * mixed))
-        # Predicted-class + confidence style.
+            return min(1.0, max(0.0,
+                float(probs.get("ai", 0.0)) + ai_assisted_weight * float(probs.get("mixed", 0.0))
+            ))
         if "predicted_class" in payload and "confidence" in payload:
-            cls = payload["predicted_class"]
-            conf = float(payload["confidence"])
-            if cls == "ai":
-                return conf
-            if cls == "human":
-                return 1.0 - conf
-            if cls == "mixed":
-                return 0.5
-        raise RuntimeError(f"Pangram response missing AI-likelihood field: {payload}")
+            cls, conf = payload["predicted_class"], float(payload["confidence"])
+            if cls == "ai": return conf
+            if cls == "human": return 1.0 - conf
+            if cls == "mixed": return 0.5
+        raise RuntimeError(f"Pangram response missing fraction_ai field: {payload}")
 
     def score(self, text: str) -> float:
-        return self._extract_p_ai(self._post(text))
+        return self._extract_p_ai(self._post(text), self.config.ai_assisted_weight)
