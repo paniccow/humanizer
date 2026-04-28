@@ -127,6 +127,28 @@ _FAVORITE_WORDS = {
     r"\bendeavour\b": "effort",
     r"\btestament\b": "sign",
     r"\bcornerstone\b": "foundation",
+    # Promotional / advertisement-like vocabulary (from Wikipedia "Signs of
+    # AI writing" → blader/humanizer skill). LLMs especially over-use these
+    # in cultural-heritage / location / company-profile contexts.
+    r"\bboasts\b": "has",
+    r"\bboasted\b": "had",
+    r"\bboasting\b": "with",
+    r"\bnestled\b": "located",
+    r"\bbreathtaking\b": "striking",
+    r"\bstunning\b": "striking",
+    r"\bmust-visit\b": "popular",
+    r"\brenowned\b": "well-known",
+    r"\bexemplifies\b": "shows",
+    r"\bexemplified\b": "showed",
+    # Superficial -ing analyses (from skill: tacked-on participle phrases that
+    # add fake depth). Drop the participle word; the surrounding edit handles
+    # the orphan comma in most cases.
+    r"\bshowcasing\b": "showing",
+    r"\bunderscoring\b": "showing",
+    r"\bhighlighting\b": "showing",
+    r"\bemphasizing\b": "noting",
+    # Note: "reflecting" / "symbolizing" / "encompassing" are too context-
+    # dependent for a blanket swap. Handled by phrase-level patterns below.
     # Note: "landscape", "ecosystem", "realm" — handled by PHRASE_SWAPS in
     # context, NOT by blanket word swap (creates worse output otherwise).
 }
@@ -170,6 +192,49 @@ _HEDGING_DROP = (
     "from a broader perspective, ",
     "the fact remains that ",
     "as such, ",
+    # Sycophantic openers (chatbot artifacts that get pasted into output)
+    "great question! ",
+    "great question, ",
+    "excellent question! ",
+    "of course! ",
+    "certainly! ",
+    "absolutely! ",
+    "you're absolutely right! ",
+    "you're absolutely right, ",
+    "that's an excellent point. ",
+    "i hope this helps! ",
+    "i hope this helps. ",
+    "let me know if you'd like ",
+    "let me know if you have any ",
+    # Signposting / announcement (LLMs say what they're about to do
+    # instead of doing it)
+    "let's dive in. ",
+    "let's dive in, ",
+    "let's dive into ",
+    "without further ado, ",
+    "let's break this down. ",
+    "let's break this down: ",
+    "let's explore ",
+    "here's what you need to know: ",
+    "here's what you need to know. ",
+    "now let's look at ",
+    # Persuasive authority tropes (filler that pretends to cut through to
+    # deeper truth — usually just restates the point with extra ceremony)
+    "at its core, ",
+    "in reality, ",
+    "fundamentally, ",
+    "the real question is, ",
+    "what really matters is ",
+    "the heart of the matter is ",
+    "the deeper issue is ",
+    # Knowledge-cutoff disclaimers — chatbot apologetics that get left in
+    "as of my last update, ",
+    "as of my last training, ",
+    "up to my last training, ",
+    "while specific details are limited, ",
+    "while details are limited, ",
+    "while details are scarce, ",
+    "based on available information, ",
     # Parenthetical AI hedges
     "(in many cases) ",
     "(if you will) ",
@@ -227,6 +292,39 @@ _PHRASE_SWAPS = {
     "let's be honest, ": "",
     "the truth is, ": "",
     "the fact is, ": "",
+    # Significance inflation (Wikipedia "Signs of AI writing" #1) — phrases
+    # that puff up importance. The skill catches more of these than our
+    # original word-level swaps.
+    "stands as a testament to": "shows",
+    "is a testament to": "shows",
+    "serves as a testament to": "shows",
+    "stands as a reminder of": "reminds us of",
+    "marking a pivotal moment in": "in",
+    "marking a key moment in": "in",
+    "key turning point in": "moment in",
+    "represents a shift in": "is a shift in",
+    "marks a shift in": "is a shift in",
+    "setting the stage for": "leading to",
+    "leaving an indelible mark on": "shaping",
+    "deeply rooted in": "rooted in",
+    "ongoing legacy of": "legacy of",
+    "enduring legacy of": "legacy of",
+    # "Reflecting/symbolizing the broader" — context-safe drops
+    "reflecting the broader": "part of the broader",
+    "symbolizing the ongoing": "part of the ongoing",
+    # Promotional location/heritage tropes (Wikipedia signs #4)
+    "in the heart of": "in",
+    "located in the heart of": "in",
+    # Vague attributions (Wikipedia signs #5) — soft swap toward concrete
+    "industry observers have noted that": "",
+    "experts argue that": "",
+    "experts believe that": "",
+    "observers have cited": "",
+    "according to industry reports": "",
+    # "Despite challenges, X continues to thrive" formula (signs #6) —
+    # too context-dependent to rewrite, just neutralize the cliche bit
+    "continues to thrive": "remains active",
+    "continues to evolve": "is changing",
     # NOTE: 'the proliferation of', 'the introduction of', etc. were
     # tried as phrase swaps but they create subject-verb agreement bugs
     # ('the proliferation of new tools has emerged' -> 'more new tools has

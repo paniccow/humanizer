@@ -178,6 +178,66 @@ def test_hour_takes_an():
     assert "an hourly" in out
 
 
+# ---- patterns adopted from blader/humanizer Wikipedia skill ----
+
+def test_promotional_vocab_swapped():
+    """boasts, nestled, breathtaking, renowned — promotional cultural-heritage
+    vocabulary that LLMs over-use."""
+    text = "The town boasts a renowned market nestled in the heart of a breathtaking valley."
+    out = scrub(text).text
+    for word in ("boasts", "nestled", "renowned", "breathtaking"):
+        assert word.lower() not in out.lower(), f"scrub left {word!r}"
+    assert "market" in out and "valley" in out
+
+
+def test_significance_inflation_swapped():
+    """'stands as a testament to', 'marking a pivotal moment in' — Wikipedia
+    skill pattern #1."""
+    text = "The institute stands as a testament to research, marking a pivotal moment in regional history."
+    out = scrub(text).text
+    assert "stands as a testament to" not in out.lower()
+    assert "marking a pivotal moment" not in out.lower()
+
+
+def test_signposting_dropped():
+    """'Let's dive in', 'Without further ado' — chatbot meta-commentary."""
+    text = "Let's dive into the topic. Without further ado, here is the analysis."
+    out = scrub(text).text
+    assert "let's dive into" not in out.lower()
+    assert "without further ado" not in out.lower()
+
+
+def test_sycophantic_openers_dropped():
+    """Chatbot pleasantries that get pasted as content."""
+    text = "Great question! The answer involves three points."
+    out = scrub(text).text
+    assert "great question" not in out.lower()
+
+
+def test_persuasive_authority_tropes_dropped():
+    """'At its core', 'The real question is', 'fundamentally' as filler."""
+    text = "At its core, the system is simple. Fundamentally, it works."
+    out = scrub(text).text
+    assert "at its core" not in out.lower()
+    assert "fundamentally," not in out.lower()
+
+
+def test_knowledge_cutoff_disclaimers_dropped():
+    """Chatbot apologetics like 'as of my last update'."""
+    text = "As of my last update, the company had 50 employees. While specific details are limited, it grew."
+    out = scrub(text).text
+    assert "as of my last update" not in out.lower()
+    assert "while specific details are limited" not in out.lower()
+
+
+def test_superficial_ing_words_swapped():
+    """showcasing/underscoring/highlighting tacked onto sentences."""
+    text = "The data is showcasing trends, underscoring growth and highlighting risk."
+    out = scrub(text).text
+    for w in ("showcasing", "underscoring", "highlighting"):
+        assert w.lower() not in out.lower(), f"scrub left {w!r}"
+
+
 # ---- end-to-end pattern aggregate must drop ----
 
 def test_full_scrub_drops_pattern_aggregate_on_busy_ai_text():
