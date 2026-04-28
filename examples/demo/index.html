@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>humanizer — demo</title>
+<style>
+  :root {
+    --bg: #0d0f12;
+    --panel: #14181d;
+    --panel-2: #1a1f26;
+    --border: #2a323d;
+    --text: #d8dce3;
+    --muted: #8a93a3;
+    --accent: #7cdfd0;
+    --accent-2: #fde68a;
+    --pass: #4ade80;
+    --fail: #f97373;
+    --warn: #fbbf24;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text); }
+  body {
+    font-family: ui-monospace, SF Mono, Menlo, monospace;
+    font-size: 14px; line-height: 1.55;
+    min-height: 100vh; padding: 32px 20px 80px;
+  }
+  .wrap { max-width: 1100px; margin: 0 auto; }
+  header { margin-bottom: 32px; }
+  h1 { font-size: 22px; font-weight: 600; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .tag { color: var(--muted); font-size: 13px; }
+  a, a:visited { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  .grid { display: grid; grid-template-columns: 1fr 380px; gap: 24px; }
+  @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 8px; padding: 16px; margin-bottom: 16px;
+  }
+  .card h2 {
+    margin: 0 0 10px; font-size: 13px; font-weight: 600;
+    color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em;
+  }
+
+  textarea {
+    width: 100%; min-height: 220px; padding: 12px;
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px;
+    font: inherit; resize: vertical;
+  }
+  textarea:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  textarea[readonly] { background: var(--panel-2); }
+
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .row.tight { gap: 12px; margin: 8px 0; }
+
+  button {
+    background: var(--accent); color: #0a0e12;
+    font: inherit; font-weight: 600;
+    border: 0; border-radius: 6px;
+    padding: 10px 16px; cursor: pointer;
+  }
+  button:hover { filter: brightness(1.1); }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  button.secondary { background: transparent; color: var(--text); border: 1px solid var(--border); }
+
+  label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+  label input[type=number], label select, label input[type=text] {
+    background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    border-radius: 4px; padding: 6px 8px; font: inherit; width: 100%;
+  }
+
+  .badge {
+    display: inline-block; padding: 2px 10px; border-radius: 999px;
+    font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
+  }
+  .badge.pass { background: rgba(74, 222, 128, 0.15); color: var(--pass); }
+  .badge.fail { background: rgba(249, 115, 115, 0.15); color: var(--fail); }
+  .badge.warn { background: rgba(251, 191, 36, 0.15); color: var(--warn); }
+  .badge.muted { background: var(--panel-2); color: var(--muted); }
+
+  .stat { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px dashed var(--border); }
+  .stat:last-child { border-bottom: 0; }
+  .stat .k { color: var(--muted); }
+  .stat .v { color: var(--text); }
+
+  .meter { height: 6px; background: var(--panel-2); border-radius: 4px; overflow: hidden; margin-top: 4px; }
+  .meter > div { height: 100%; background: var(--fail); transition: width .2s; }
+  .meter.low > div { background: var(--pass); }
+  .meter.mid > div { background: var(--warn); }
+
+  pre { margin: 0; white-space: pre-wrap; }
+  .err { color: var(--fail); }
+  .out { font-size: 14px; line-height: 1.6; }
+  .small { font-size: 12px; color: var(--muted); }
+  .reliability {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 6px 12px;
+    font-size: 12px; padding-top: 4px;
+  }
+  .reliability b { color: var(--accent); font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>humanizer / demo</h1>
+    <div class="tag">
+      Rejection-sampling + paid-detector ensemble. Calls
+      <span id="endpoint">http://localhost:8000</span>.
+      <a href="https://github.com/paniccow/humanizer" target="_blank">repo</a>
+    </div>
+  </header>
+
+  <div class="grid">
+    <div>
+      <div class="card">
+        <h2>input</h2>
+        <textarea id="input" placeholder="Paste AI-generated text here…">In today's rapidly evolving digital landscape, artificial intelligence has emerged as a transformative force. Furthermore, organizations are leveraging AI to navigate the intricate complexities of this multifaceted ecosystem. Moreover, the integration of machine learning is paramount.</textarea>
+        <div class="row" style="margin-top: 12px;">
+          <button id="humanize-btn">Humanize</button>
+          <button id="detect-btn" class="secondary">Score original only</button>
+          <span id="status" class="small"></span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>output</h2>
+        <div id="badges" class="row" style="margin-bottom: 8px;"></div>
+        <textarea id="output" readonly placeholder="Humanized text will appear here…"></textarea>
+        <div id="error" class="err small" style="margin-top: 8px;"></div>
+      </div>
+    </div>
+
+    <div>
+      <div class="card">
+        <h2>settings</h2>
+        <div class="reliability" style="grid-template-columns: 1fr 1fr;">
+          <label>candidates / round
+            <input type="number" id="candidates" min="1" max="16" value="8">
+          </label>
+          <label>max rounds
+            <input type="number" id="rounds" min="1" max="8" value="4">
+          </label>
+          <label>strict pass p_ai &lt;
+            <input type="number" id="threshold" min="0" max="1" step="0.01" value="0.05">
+          </label>
+          <label>API key (optional)
+            <input type="text" id="apikey" placeholder="bearer token">
+          </label>
+        </div>
+        <div style="margin-top: 12px;">
+          <label style="font-size: 12px;">endpoint
+            <input type="text" id="endpoint-input" value="http://localhost:8000">
+          </label>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>request stats</h2>
+        <div id="stats">
+          <div class="stat"><span class="k">elapsed</span><span class="v" id="s-elapsed">—</span></div>
+          <div class="stat"><span class="k">attempts</span><span class="v" id="s-attempts">—</span></div>
+          <div class="stat"><span class="k">judge calls</span><span class="v" id="s-judge">—</span></div>
+          <div class="stat"><span class="k">rounds used</span><span class="v" id="s-rounds">—</span></div>
+          <div class="stat"><span class="k">judge</span><span class="v" id="s-judge-name">—</span></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>p_ai (chosen output)</h2>
+        <div id="meter-wrap">
+          <div class="row" style="justify-content: space-between;">
+            <span class="small">human</span><span class="small">ai</span>
+          </div>
+          <div class="meter" id="meter"><div style="width: 0;"></div></div>
+          <div id="meter-label" style="text-align: right; margin-top: 4px;" class="small">—</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>per-detector breakdown</h2>
+        <div id="breakdown" class="small">No ensemble judge configured. Set ORIGINALITY_API_KEY etc. for breakdown.</div>
+      </div>
+
+      <div class="card">
+        <h2>reliability projection</h2>
+        <div class="reliability" id="reliability">
+          <span class="small">single-shot p</span><b>—</b>
+          <span class="small">best-of-8</span><b>—</b>
+          <span class="small">best-of-16</span><b>—</b>
+          <span class="small">best-of-32</span><b>—</b>
+        </div>
+        <div class="small" style="margin-top: 8px;">
+          From the math: 1 − (1 − p)<sup>N</sup>. Numbers update from the
+          last single-shot p_ai you got.
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+function endpoint() {
+  return $("endpoint-input").value.replace(/\/+$/, "");
+}
+
+function setStatus(msg, kind) {
+  $("status").textContent = msg || "";
+  $("status").style.color =
+    kind === "err" ? "var(--fail)" :
+    kind === "ok" ? "var(--pass)" : "var(--muted)";
+}
+
+function setMeter(p) {
+  const pct = Math.round(p * 100);
+  const bar = $("meter").firstElementChild;
+  bar.style.width = pct + "%";
+  $("meter").className = "meter " + (p < 0.1 ? "low" : p < 0.5 ? "mid" : "");
+  $("meter-label").textContent = `p_ai = ${p.toFixed(3)}  (${pct}% AI-likelihood)`;
+}
+
+function renderBadges(passed) {
+  const el = $("badges");
+  el.innerHTML = "";
+  if (passed === true) el.innerHTML = `<span class="badge pass">PASSED</span>`;
+  else if (passed === false) el.innerHTML = `<span class="badge fail">EXHAUSTED</span>`;
+}
+
+function renderBreakdown(per) {
+  const el = $("breakdown");
+  if (!per) {
+    el.textContent = "Single detector — no per-detector breakdown.";
+    return;
+  }
+  const rows = Object.entries(per).map(([k, v]) => {
+    const pass = v < 0.5;
+    return `<div class="stat">
+      <span class="k">${k}</span>
+      <span class="v">
+        ${v.toFixed(3)} ${pass ? '<span class="badge pass">ok</span>' : '<span class="badge warn">flag</span>'}
+      </span>
+    </div>`;
+  }).join("");
+  el.innerHTML = rows;
+}
+
+function renderReliability(p) {
+  const el = $("reliability");
+  if (p == null || isNaN(p)) {
+    el.innerHTML = `
+      <span class="small">single-shot p</span><b>—</b>
+      <span class="small">best-of-8</span><b>—</b>
+      <span class="small">best-of-16</span><b>—</b>
+      <span class="small">best-of-32</span><b>—</b>`;
+    return;
+  }
+  const passRate = 1 - p;  // p is p_ai of one sample; pass = 1 - p_ai (when threshold = 0.5)
+  const fmt = (n) => n >= 0.9999 ? "99.99%+" : `${(n * 100).toFixed(2)}%`;
+  const bestOf = (N) => 1 - Math.pow(1 - passRate, N);
+  el.innerHTML = `
+    <span class="small">single-shot pass</span><b>${(passRate * 100).toFixed(0)}%</b>
+    <span class="small">best-of-8</span><b>${fmt(bestOf(8))}</b>
+    <span class="small">best-of-16</span><b>${fmt(bestOf(16))}</b>
+    <span class="small">best-of-32</span><b>${fmt(bestOf(32))}</b>`;
+}
+
+async function call(path, body) {
+  const headers = { "Content-Type": "application/json" };
+  const tok = $("apikey").value.trim();
+  if (tok) headers["Authorization"] = "Bearer " + tok;
+  const r = await fetch(`${endpoint()}${path}`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  });
+  const text = await r.text();
+  let data;
+  try { data = JSON.parse(text); } catch { data = { error: text }; }
+  if (!r.ok) throw new Error(data.detail || data.error || `HTTP ${r.status}`);
+  return data;
+}
+
+async function doHumanize() {
+  $("humanize-btn").disabled = true;
+  $("detect-btn").disabled = true;
+  $("error").textContent = "";
+  setStatus("Working… (paid judge calls take 2-4s each)");
+  try {
+    const data = await call("/humanize", {
+      text: $("input").value,
+      candidates: parseInt($("candidates").value, 10),
+      max_rounds: parseInt($("rounds").value, 10),
+      threshold: parseFloat($("threshold").value),
+    });
+    $("output").value = data.text;
+    renderBadges(data.passed);
+    setMeter(data.score ?? 1);
+    renderBreakdown(data.per_detector);
+    renderReliability(data.score);
+    $("s-elapsed").textContent = `${data.elapsed_ms} ms`;
+    $("s-attempts").textContent = data.attempts;
+    $("s-judge").textContent = data.judge_calls ?? "—";
+    $("s-rounds").textContent = data.rounds_used ?? "—";
+    $("s-judge-name").textContent = data.judge ?? "—";
+    setStatus(data.passed ? "Passed" : "Exhausted — best-found returned", data.passed ? "ok" : "err");
+  } catch (e) {
+    $("error").textContent = e.message;
+    setStatus("Failed", "err");
+  } finally {
+    $("humanize-btn").disabled = false;
+    $("detect-btn").disabled = false;
+  }
+}
+
+async function doDetect() {
+  $("humanize-btn").disabled = true;
+  $("detect-btn").disabled = true;
+  $("error").textContent = "";
+  setStatus("Scoring with judge…");
+  try {
+    const data = await call("/detect", { text: $("input").value });
+    setMeter(data.p_ai);
+    renderBadges(null);
+    renderBreakdown(data.per_detector);
+    renderReliability(data.p_ai);
+    $("s-elapsed").textContent = `${data.elapsed_ms} ms`;
+    $("s-judge-name").textContent = data.judge;
+    $("s-attempts").textContent = "—";
+    $("s-judge").textContent = "1";
+    $("s-rounds").textContent = "—";
+    $("output").value = "(no humanization performed — score-only mode)";
+    setStatus("Scored", "ok");
+  } catch (e) {
+    $("error").textContent = e.message;
+    setStatus("Failed", "err");
+  } finally {
+    $("humanize-btn").disabled = false;
+    $("detect-btn").disabled = false;
+  }
+}
+
+$("humanize-btn").addEventListener("click", doHumanize);
+$("detect-btn").addEventListener("click", doDetect);
+$("endpoint-input").addEventListener("change", () => {
+  $("endpoint").textContent = endpoint();
+});
+</script>
+</body>
+</html>

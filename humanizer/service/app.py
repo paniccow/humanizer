@@ -33,6 +33,7 @@ from typing import Any, List, Optional
 
 # These imports at module-import time so a missing FastAPI is loud.
 from fastapi import FastAPI, Header, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 
@@ -51,6 +52,9 @@ class ServiceConfig:
     similarity_threshold: float = field(default_factory=lambda: float(os.environ.get("HUMANIZER_SIM_THRESHOLD", "0.78")))
     api_key_env: str = "HUMANIZER_API_KEY"
     max_chars: int = field(default_factory=lambda: int(os.environ.get("HUMANIZER_MAX_CHARS", "20000")))
+    # Comma-separated origins allowed by CORS. "*" allows everything (fine
+    # for the demo; in production, list explicit origins). Empty string disables.
+    cors_origins: str = field(default_factory=lambda: os.environ.get("HUMANIZER_CORS_ORIGINS", ""))
 
 
 class HumanizeRequest(BaseModel):
@@ -181,8 +185,21 @@ def build_app(config: Optional[ServiceConfig] = None) -> FastAPI:
     code uses the module-level `app` exported below."""
     cfg = config or ServiceConfig()
     state = _State(cfg)
-    api = FastAPI(title="humanizer", version="0.5.0")
+    api = FastAPI(title="humanizer", version="0.6.0")
     api.state.svc = state
+
+    # CORS — opt-in. The static demo at examples/demo/index.html runs on a
+    # different port and needs this. "*" is fine for dev; production should
+    # list explicit origins.
+    if cfg.cors_origins:
+        origins = [o.strip() for o in cfg.cors_origins.split(",") if o.strip()]
+        api.add_middleware(
+            CORSMiddleware,
+            allow_origins=origins,
+            allow_credentials=True,
+            allow_methods=["GET", "POST"],
+            allow_headers=["*"],
+        )
 
     # Optional: attach JSONL telemetry middleware if HUMANIZER_TELEMETRY_PATH
     # is set. No-op when unset — zero overhead in dev/test by default.
