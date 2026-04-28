@@ -164,3 +164,89 @@ def test_version_endpoint(monkeypatch):
     r = TestClient(api).get("/version")
     assert r.status_code == 200
     assert r.json()["name"] == "humanizer"
+
+
+class _StubJudgeWithBreakdown:
+    """Has .score() and .last_breakdown (mimics EnsembleJudge contract)."""
+    name = "ensemble(orig+pgr)"
+
+    def __init__(self, p_ai: float, breakdown: dict):
+        self._p = p_ai
+        self.last_breakdown = breakdown
+
+    def score(self, text):
+        return self._p
+
+
+def test_detect_endpoint_returns_per_detector(monkeypatch):
+    monkeypatch.delenv("HUMANIZER_API_KEY", raising=False)
+    judge = _StubJudgeWithBreakdown(0.42, {"originality": 0.5, "pangram": 0.34})
+    stub = _StubRejection()
+    stub.judge = judge  # detect endpoint reads humanizer.judge
+    api = _build_app_with_stub(stub)
+    r = TestClient(api).post("/detect", json={"text": "some text to score"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["p_ai"] == pytest.approx(0.42)
+    assert body["judge"] == "ensemble(orig+pgr)"
+    assert body["per_detector"] == {"originality": 0.5, "pangram": 0.34}
+    assert body["elapsed_ms"] >= 0
+
+
+def test_detect_works_with_single_detector_no_breakdown(monkeypatch):
+    monkeypatch.delenv("HUMANIZER_API_KEY", raising=False)
+    # Single Detector — no last_breakdown attribute
+    class _SingleDet:
+        name = "single"
+        def score(self, text):
+            return 0.7
+    stub = _StubRejection()
+    stub.judge = _SingleDet()
+    api = _build_app_with_stub(stub)
+    r = TestClient(api).post("/detect", json={"text": "hi"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["p_ai"] == pytest.approx(0.7)
+    assert body["judge"] == "single"
+    assert body["per_detector"] is None
+
+
+def test_detect_requires_auth(monkeypatch):
+    monkeypatch.setenv("HUMANIZER_API_KEY", "tok")
+    judge = _StubJudgeWithBreakdown(0.1, {})
+    stub = _StubRejection()
+    stub.judge = judge
+    api = _build_app_with_stub(stub)
+    r = TestClient(api).post("/detect", json={"text": "hi"})
+    assert r.status_code == 401
+    r = TestClient(api).post(
+        "/detect", json={"text": "hi"},
+        headers={"Authorization": "Bearer tok"},
+    )
+    assert r.status_code == 200
+
+
+def test_humanize_response_includes_per_detector_when_set(monkeypatch):
+    """When the rejection sampler's metadata includes per_detector
+    (because the judge is EnsembleJudge), the /humanize response
+    surfaces it."""
+    monkeypatch.delenv("HUMANIZER_API_KEY", raising=False)
+
+    # Override stub to include per_detector in metadata
+    class _Stub2(_StubRejection):
+        def humanize(self, text, **_):
+            from humanizer.humanizers.base import HumanizeResult
+            return HumanizeResult(
+                original=text, text="OUT", score=0.02, attempts=8,
+                metadata={
+                    "passed": True, "judge": "ens", "judge_calls": 8,
+                    "rounds_used": 1, "best_p_ai": 0.02,
+                    "per_detector": {"originality": 0.01, "pangram": 0.03},
+                },
+            )
+
+    api = _build_app_with_stub(_Stub2())
+    r = TestClient(api).post("/humanize", json={"text": "hi"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["per_detector"] == {"originality": 0.01, "pangram": 0.03}

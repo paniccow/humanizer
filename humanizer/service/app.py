@@ -67,7 +67,19 @@ class HumanizeResponse(BaseModel):
     judge: Optional[str] = None
     rounds_used: Optional[int] = None
     judge_calls: Optional[int] = None
+    per_detector: Optional[dict] = None  # populated when judge is EnsembleJudge
     attempts: int
+    elapsed_ms: int
+
+
+class DetectRequest(BaseModel):
+    text: str = Field(..., min_length=1)
+
+
+class DetectResponse(BaseModel):
+    p_ai: float
+    judge: str
+    per_detector: Optional[dict] = None
     elapsed_ms: int
 
 
@@ -198,7 +210,33 @@ def build_app(config: Optional[ServiceConfig] = None) -> FastAPI:
             judge=meta.get("judge"),
             rounds_used=meta.get("rounds_used"),
             judge_calls=meta.get("judge_calls"),
+            per_detector=meta.get("per_detector"),
             attempts=result.attempts,
+            elapsed_ms=elapsed_ms,
+        )
+
+    @api.post("/detect", response_model=DetectResponse)
+    async def detect(req: DetectRequest, authorization: Optional[str] = Header(None)):
+        """Score arbitrary text with the configured judge — useful for UI
+        feedback ("your AI-likelihood is X") and for testing the judge
+        configuration without consuming an LLM generation."""
+        _check_auth(state, authorization)
+        if len(req.text) > cfg.max_chars:
+            raise HTTPException(
+                status_code=413,
+                detail=f"text exceeds max_chars={cfg.max_chars}",
+            )
+        # Get the same judge the rejection sampler uses (lazy-init shared state).
+        rejection = state.get_humanizer()
+        judge = rejection.judge
+        t0 = time.time()
+        p_ai = float(judge.score(req.text))
+        elapsed_ms = int((time.time() - t0) * 1000)
+        per_det = getattr(judge, "last_breakdown", None)
+        return DetectResponse(
+            p_ai=p_ai,
+            judge=judge.name,
+            per_detector=dict(per_det) if per_det else None,
             elapsed_ms=elapsed_ms,
         )
 

@@ -158,6 +158,7 @@ class RejectionSamplingHumanizer(Humanizer):
         best_text: str | None = None
         best_p_ai: float = 1.0
         best_round: int | None = None
+        best_breakdown: dict | None = None
         rounds_used = 0
         total_attempts = 0
         total_judge_calls = 0
@@ -179,12 +180,20 @@ class RejectionSamplingHumanizer(Humanizer):
             # Score survivors through the judge, with early exit on success.
             scores: list[float] = []
             chosen_idx: int | None = None
+            chosen_breakdown: dict | None = None
             for i, cand in enumerate(kept):
                 p = float(self.judge.score(cand))
                 scores.append(p)
                 total_judge_calls += 1
                 if cfg.early_exit_p_ai is not None and p < cfg.early_exit_p_ai:
                     chosen_idx = i
+                    # If the judge is an EnsembleJudge, capture per-detector
+                    # scores for the chosen candidate. last_breakdown is
+                    # populated by EnsembleJudge.score() — single detectors
+                    # don't expose this attribute.
+                    chosen_breakdown = getattr(self.judge, "last_breakdown", None)
+                    if chosen_breakdown is not None:
+                        chosen_breakdown = dict(chosen_breakdown)  # snapshot
                     break
 
             if self._on_round:
@@ -195,28 +204,45 @@ class RejectionSamplingHumanizer(Humanizer):
                 chosen_idx if chosen_idx is not None else min(range(len(scores)), key=lambda i: scores[i])
             )
             round_best_p = scores[round_best_idx]
+
+            # If we DIDN'T early-exit, the chosen candidate is the lowest-p_ai
+            # one in this batch — re-score the chosen one to refresh the
+            # ensemble's last_breakdown for it (cheaper than tracking through
+            # the loop, since the score is already cached above).
+            if chosen_breakdown is None:
+                # Re-trigger the judge so EnsembleJudge.last_breakdown reflects
+                # the chosen candidate. No effect for single detectors.
+                if hasattr(self.judge, "last_breakdown"):
+                    self.judge.score(kept[round_best_idx])
+                    bd = getattr(self.judge, "last_breakdown", None)
+                    chosen_breakdown = dict(bd) if bd else None
+
             if round_best_p < best_p_ai:
                 best_p_ai = round_best_p
                 best_text = kept[round_best_idx]
                 best_round = round_idx
+                best_breakdown = chosen_breakdown
 
             # Strict-threshold pass: return immediately.
             if round_best_p < cfg.p_ai_threshold:
                 passed = True
+                meta = {
+                    "passed": True,
+                    "rounds_used": rounds_used,
+                    "judge": self.judge.name,
+                    "judge_calls": total_judge_calls,
+                    "best_p_ai": round_best_p,
+                    "best_round": round_idx,
+                    "threshold": cfg.p_ai_threshold,
+                }
+                if chosen_breakdown:
+                    meta["per_detector"] = chosen_breakdown
                 return HumanizeResult(
                     original=text,
                     text=kept[round_best_idx],
                     score=round_best_p,
                     attempts=total_attempts,
-                    metadata={
-                        "passed": True,
-                        "rounds_used": rounds_used,
-                        "judge": self.judge.name,
-                        "judge_calls": total_judge_calls,
-                        "best_p_ai": round_best_p,
-                        "best_round": round_idx,
-                        "threshold": cfg.p_ai_threshold,
-                    },
+                    metadata=meta,
                 )
 
         # Exhausted without crossing strict threshold.
@@ -232,18 +258,21 @@ class RejectionSamplingHumanizer(Humanizer):
             best_p_ai = float(self.judge.score(text))
             total_judge_calls += 1
 
+        meta = {
+            "passed": passed,
+            "rounds_used": rounds_used,
+            "judge": self.judge.name,
+            "judge_calls": total_judge_calls,
+            "best_p_ai": best_p_ai,
+            "best_round": best_round,
+            "threshold": cfg.p_ai_threshold,
+        }
+        if best_breakdown:
+            meta["per_detector"] = best_breakdown
         return HumanizeResult(
             original=text,
             text=best_text,
             score=best_p_ai,
             attempts=total_attempts,
-            metadata={
-                "passed": passed,
-                "rounds_used": rounds_used,
-                "judge": self.judge.name,
-                "judge_calls": total_judge_calls,
-                "best_p_ai": best_p_ai,
-                "best_round": best_round,
-                "threshold": cfg.p_ai_threshold,
-            },
+            metadata=meta,
         )
