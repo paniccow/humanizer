@@ -87,6 +87,13 @@ class RejectionConfig:
     )
     early_exit_p_ai: float | None = 0.05
     fallback_to_best: bool = True
+    # Optional fact-preservation gate. If > 0, candidates whose
+    # entity_overlap (numbers, dates, $ amounts, proper nouns) with the
+    # original is below this threshold are dropped before judge scoring.
+    # 0.0 disables (default — false-positives possible since the metric is
+    # heuristic). Turn on for high-stakes inputs (academic essays, news,
+    # technical docs) where dropping a number or date is unacceptable.
+    preservation_threshold: float = 0.0
     # When > 1, score candidates concurrently via ThreadPoolExecutor.
     # Real win for HTTP-API judges (GPTZero / Originality / Pangram) — an
     # 8-candidate batch drops from 8 × ~2s serial to ~2s parallel. Local
@@ -160,6 +167,13 @@ class RejectionSamplingHumanizer(Humanizer):
             return [c for c, _ in kept_pairs], [s for _, s in kept_pairs]
         return [], sims  # similarity values still useful for telemetry
 
+    def _filter_by_facts(self, original: str, candidates: list[str]) -> list[str]:
+        """Optional: drop candidates that drop too many source facts."""
+        if self.config.preservation_threshold <= 0.0 or not candidates:
+            return candidates
+        from ..metrics.facts import entity_overlap
+        return [c for c in candidates if entity_overlap(original, c) >= self.config.preservation_threshold]
+
     def humanize(self, text: str, **_) -> HumanizeResult:
         cfg = self.config
         best_text: str | None = None
@@ -178,8 +192,9 @@ class RejectionSamplingHumanizer(Humanizer):
             total_attempts += len(cands)
 
             kept, sims = self._filter_by_similarity(text, cands)
+            kept = self._filter_by_facts(text, kept)
             if not kept:
-                # Whole batch lost meaning. Try harder next round (more temp).
+                # Whole batch lost meaning OR dropped facts. Try harder next round.
                 if self._on_round:
                     self._on_round(round_idx, cands, [])
                 continue

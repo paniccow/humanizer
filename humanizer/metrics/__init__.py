@@ -3,6 +3,7 @@ from __future__ import annotations
 
 # Pure-python — safe to import eagerly.
 from .burstiness import BurstinessStats, sentence_length_stats, split_sentences
+from .facts import FactSet, entity_overlap, extract_facts
 
 _LAZY = {
     "embedding_similarity": (".semantic", "embedding_similarity"),
@@ -14,6 +15,7 @@ _LAZY = {
 __all__ = [
     "embedding_similarity", "bertscore_f1", "perplexity", "length_ratio",
     "BurstinessStats", "sentence_length_stats", "split_sentences",
+    "FactSet", "entity_overlap", "extract_facts",
 ]
 
 

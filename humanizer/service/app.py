@@ -106,6 +106,22 @@ class SampleResponse(BaseModel):
     elapsed_ms: int
 
 
+class EstimateRequest(BaseModel):
+    text: str = Field(..., min_length=1)
+
+
+class EstimateResponse(BaseModel):
+    expected_cost_usd: float           # passes round 1
+    worst_case_cost_usd: float         # exhausts all rounds × candidates
+    candidates_per_round: int
+    max_rounds: int
+    judge: str
+    llm_cost_per_call: float
+    judge_cost_per_call: float
+    input_chars: int
+    facts_detected: int                # numbers / dates / proper nouns in input
+
+
 class HealthResponse(BaseModel):
     status: str
     model: str
@@ -297,6 +313,43 @@ def build_app(config: Optional[ServiceConfig] = None) -> FastAPI:
             candidates=candidates,
             judge=judge.name if req.score else None,
             elapsed_ms=elapsed_ms,
+        )
+
+    @api.post("/estimate", response_model=EstimateResponse)
+    async def estimate(req: EstimateRequest, authorization: Optional[str] = Header(None)):
+        """Pre-flight cost estimate for /humanize given the current config
+        and the input text. Doesn't actually call any LLM or judge — just
+        does the arithmetic. Useful for product UI showing the user the
+        expected vs worst-case price before they commit."""
+        _check_auth(state, authorization)
+        if len(req.text) > cfg.max_chars:
+            raise HTTPException(
+                status_code=413,
+                detail=f"text exceeds max_chars={cfg.max_chars}",
+            )
+        # Pre-warm the humanizer/judge so we can name the judge accurately.
+        rejection = state.get_humanizer()
+        from ..metrics.facts import extract_facts
+        from .telemetry import _judge_cost_per_call, _llm_cost_per_call
+        llm_c = _llm_cost_per_call()
+        judge_c = _judge_cost_per_call()
+        n = cfg.candidates_per_round
+        rounds = cfg.max_rounds
+        # Expected: passes round 1 -> n LLM gens + n judge calls.
+        expected = n * llm_c + n * judge_c
+        # Worst case: every round exhausts -> n*rounds LLM + n*rounds judge.
+        worst = n * rounds * llm_c + n * rounds * judge_c
+        facts = extract_facts(req.text)
+        return EstimateResponse(
+            expected_cost_usd=round(expected, 6),
+            worst_case_cost_usd=round(worst, 6),
+            candidates_per_round=n,
+            max_rounds=rounds,
+            judge=rejection.judge.name,
+            llm_cost_per_call=llm_c,
+            judge_cost_per_call=judge_c,
+            input_chars=len(req.text),
+            facts_detected=len(facts),
         )
 
     @api.post("/detect", response_model=DetectResponse)

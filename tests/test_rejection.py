@@ -218,6 +218,54 @@ def test_concurrent_judge_falls_back_to_serial_when_one_candidate(monkeypatch):
     assert judge.calls == 1
 
 
+def test_preservation_threshold_drops_fact_losing_candidates(monkeypatch):
+    """When preservation_threshold > 0, candidates that drop facts are
+    filtered out before the judge sees them."""
+    _patch_similarity(monkeypatch)
+    src = "Founded in 1947 with $5,000."
+    base = _StubBase([[
+        "Established back in 1947 with five thousand dollars.",   # keeps year + bare $5000-ish
+        "It started a long time ago with no money.",              # drops both facts
+    ]])
+    # Judge would prefer the second one (lower fake p_ai), but with the
+    # preservation gate we should reject it before scoring.
+    judge = _StubJudge({
+        "Established back in 1947 with five thousand dollars.": 0.5,
+        "It started a long time ago with no money.": 0.01,
+    })
+    h = RejectionSamplingHumanizer(
+        base, judge,
+        RejectionConfig(
+            candidates_per_round=2, max_rounds=1,
+            p_ai_threshold=0.5,                # only need < 0.5 to pass
+            preservation_threshold=0.5,        # require >= 50% facts preserved
+        ),
+    )
+    out = h.humanize(src)
+    # The "no money" version should have been dropped, leaving only the
+    # 1947-preserving one.
+    assert "1947" in out.text
+
+
+def test_preservation_threshold_zero_is_disabled(monkeypatch):
+    """Default 0.0 -> no fact filtering (back-compat)."""
+    _patch_similarity(monkeypatch)
+    src = "Founded in 1947."
+    base = _StubBase([["Founded in 1948."]])  # year changed
+    judge = _StubJudge({"Founded in 1948.": 0.01})
+    h = RejectionSamplingHumanizer(
+        base, judge,
+        RejectionConfig(
+            candidates_per_round=1, max_rounds=1,
+            p_ai_threshold=0.05,
+            # preservation_threshold defaults to 0.0
+        ),
+    )
+    out = h.humanize(src)
+    # With no preservation gate, the wrong-year candidate is accepted.
+    assert out.text == "Founded in 1948."
+
+
 def test_metadata_contains_telemetry_fields(monkeypatch):
     _patch_similarity(monkeypatch)
     base = _StubBase([["good"]])

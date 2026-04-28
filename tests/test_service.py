@@ -363,6 +363,43 @@ def test_parse_rate_spec():
         parse_rate("60/decade")
 
 
+def test_estimate_endpoint(monkeypatch):
+    monkeypatch.delenv("HUMANIZER_API_KEY", raising=False)
+    monkeypatch.setenv("HUMANIZER_LLM_COST", "0.001")
+    monkeypatch.setenv("HUMANIZER_JUDGE_COST", "0.003")
+    monkeypatch.setenv("HUMANIZER_REJECT_N", "8")
+    monkeypatch.setenv("HUMANIZER_REJECT_ROUNDS", "4")
+
+    from humanizer.service.app import ServiceConfig, build_app
+    api = build_app(ServiceConfig())
+    api.state.svc.get_humanizer = lambda: _StubRejection()
+    api.state.svc._judge_resolved_name = "fake-judge"
+
+    # Stub out the judge name lookup (rejection.judge.name)
+    class _NamedStub(_StubRejection):
+        def __init__(self):
+            super().__init__()
+            class _J: name = "fake-judge"
+            self.judge = _J()
+
+    api.state.svc.get_humanizer = lambda: _NamedStub()
+    r = TestClient(api).post(
+        "/estimate",
+        json={"text": "Sales hit $5,000 in 2024 with 25% growth."},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    # 8 candidates × ($0.001 + $0.003) = $0.032
+    assert body["expected_cost_usd"] == pytest.approx(0.032)
+    # 8 × 4 × ($0.001 + $0.003) = $0.128
+    assert body["worst_case_cost_usd"] == pytest.approx(0.128)
+    assert body["candidates_per_round"] == 8
+    assert body["max_rounds"] == 4
+    assert body["judge"] == "fake-judge"
+    # Detected: $5,000 (currency), 2024 (year), 25% (pct) = 3 facts
+    assert body["facts_detected"] >= 3
+
+
 def test_telemetry_writes_jsonl(monkeypatch, tmp_path):
     """When HUMANIZER_TELEMETRY_PATH is set, every /humanize request
     appends a JSONL record with timing + judge_calls + cost estimate."""
