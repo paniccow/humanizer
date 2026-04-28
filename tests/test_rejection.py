@@ -176,6 +176,48 @@ def test_no_temp_ramp_returns_none():
     assert _temp_for_round(cfg, 0) is None
 
 
+def test_concurrent_judge_scores_all_candidates_in_parallel(monkeypatch):
+    """When concurrent_judge_calls > 1, all candidates get scored (no
+    early-exit). The best is still chosen by lowest p_ai."""
+    _patch_similarity(monkeypatch)
+    base = _StubBase([["a", "b", "c", "d"]])
+    # b is the best, but a would early-exit if we ran serially. With
+    # concurrent_judge_calls=4 we score all four and pick b.
+    judge = _StubJudge({"a": 0.04, "b": 0.001, "c": 0.5, "d": 0.6})
+    h = RejectionSamplingHumanizer(
+        base, judge,
+        RejectionConfig(
+            candidates_per_round=4, max_rounds=1,
+            p_ai_threshold=0.05, early_exit_p_ai=0.05,
+            concurrent_judge_calls=4,
+        ),
+    )
+    out = h.humanize("source")
+    # All 4 candidates were judged (no early-exit in concurrent mode).
+    assert judge.calls == 4
+    # Best (lowest p_ai) was chosen — b at 0.001, not a at 0.04.
+    assert out.text == "b"
+    assert out.score == pytest.approx(0.001)
+    assert out.metadata["passed"] is True
+
+
+def test_concurrent_judge_falls_back_to_serial_when_one_candidate(monkeypatch):
+    """concurrent_judge_calls > 1 but only one candidate -> serial path."""
+    _patch_similarity(monkeypatch)
+    base = _StubBase([["only_one"]])
+    judge = _StubJudge({"only_one": 0.01})
+    h = RejectionSamplingHumanizer(
+        base, judge,
+        RejectionConfig(
+            candidates_per_round=1, max_rounds=1,
+            p_ai_threshold=0.05, concurrent_judge_calls=8,
+        ),
+    )
+    out = h.humanize("source")
+    assert out.text == "only_one"
+    assert judge.calls == 1
+
+
 def test_metadata_contains_telemetry_fields(monkeypatch):
     _patch_similarity(monkeypatch)
     base = _StubBase([["good"]])

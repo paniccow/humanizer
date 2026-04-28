@@ -87,6 +87,13 @@ class RejectionConfig:
     )
     early_exit_p_ai: float | None = 0.05
     fallback_to_best: bool = True
+    # When > 1, score candidates concurrently via ThreadPoolExecutor.
+    # Real win for HTTP-API judges (GPTZero / Originality / Pangram) — an
+    # 8-candidate batch drops from 8 × ~2s serial to ~2s parallel. Local
+    # RoBERTa judges don't benefit much (already GPU-batched internally).
+    # Disables early-exit (we get all scores back at once), so set to 1
+    # if your judge is expensive AND you want short-circuit semantics.
+    concurrent_judge_calls: int = 1
 
 
 def _temp_for_round(cfg: RejectionConfig, round_idx: int) -> float | None:
@@ -177,24 +184,40 @@ class RejectionSamplingHumanizer(Humanizer):
                     self._on_round(round_idx, cands, [])
                 continue
 
-            # Score survivors through the judge, with early exit on success.
+            # Score survivors through the judge.
+            # Two paths:
+            #   - concurrent_judge_calls > 1: score all candidates in parallel
+            #     via ThreadPoolExecutor (no early-exit — we want all scores
+            #     back). Best for HTTP-API judges where each call is ~2s.
+            #   - concurrent_judge_calls <= 1: serial with early-exit on first
+            #     pass. Saves judge calls when typical case passes round 1.
             scores: list[float] = []
             chosen_idx: int | None = None
             chosen_breakdown: dict | None = None
-            for i, cand in enumerate(kept):
-                p = float(self.judge.score(cand))
-                scores.append(p)
-                total_judge_calls += 1
-                if cfg.early_exit_p_ai is not None and p < cfg.early_exit_p_ai:
-                    chosen_idx = i
-                    # If the judge is an EnsembleJudge, capture per-detector
-                    # scores for the chosen candidate. last_breakdown is
-                    # populated by EnsembleJudge.score() — single detectors
-                    # don't expose this attribute.
-                    chosen_breakdown = getattr(self.judge, "last_breakdown", None)
-                    if chosen_breakdown is not None:
-                        chosen_breakdown = dict(chosen_breakdown)  # snapshot
-                    break
+            if cfg.concurrent_judge_calls > 1 and len(kept) > 1:
+                from concurrent.futures import ThreadPoolExecutor
+                workers = min(cfg.concurrent_judge_calls, len(kept))
+                with ThreadPoolExecutor(max_workers=workers) as pool:
+                    scores = [float(p) for p in pool.map(self.judge.score, kept)]
+                total_judge_calls += len(kept)
+                # Pick the best (lowest p_ai) candidate. last_breakdown is
+                # not safe here (race across threads on EnsembleJudge), so we
+                # re-score the chosen one below the loop.
+            else:
+                for i, cand in enumerate(kept):
+                    p = float(self.judge.score(cand))
+                    scores.append(p)
+                    total_judge_calls += 1
+                    if cfg.early_exit_p_ai is not None and p < cfg.early_exit_p_ai:
+                        chosen_idx = i
+                        # If the judge is an EnsembleJudge, capture per-detector
+                        # scores for the chosen candidate. last_breakdown is
+                        # populated by EnsembleJudge.score() — single detectors
+                        # don't expose this attribute.
+                        chosen_breakdown = getattr(self.judge, "last_breakdown", None)
+                        if chosen_breakdown is not None:
+                            chosen_breakdown = dict(chosen_breakdown)  # snapshot
+                        break
 
             if self._on_round:
                 self._on_round(round_idx, kept, scores)
