@@ -107,10 +107,18 @@ class Cfg:
     # Pangram API settings (the real-world judge):
     pangram_api_key_env: str = "PANGRAM_API_KEY"
     pangram_endpoint: str = "https://text.api.pangramlabs.com/v3"
-    pangram_weight: float = 1.0          # weight in the ensemble; 1.0 = equal to local detectors
+    pangram_weight: float = 2.0          # When Pangram fires it dominates the ensemble (heavier than locals)
     pangram_ai_assisted_weight: float = 0.5   # how much of fraction_ai_assisted to count as AI
     pangram_timeout_s: float = 30.0
     pangram_retries: int = 2
+    # Sparse Pangram calling: only hit the API every Nth step. Other steps
+    # train against local detectors only (free). This is the cost lever.
+    # 1   = every step  (~$60 for 400 steps × 2 generations)
+    # 25  = every 25th  (~$1.60 for 400 steps; bonus ground-truth signal)
+    # 50  = every 50th  (~$0.80)
+    # 0   = never        (free, equivalent to v5 without disc)
+    # Override via HUMANIZER_PANGRAM_EVERY env var.
+    pangram_every: int = int(os.environ.get("HUMANIZER_PANGRAM_EVERY", 25))
     n_train_prompts: int = int(os.environ.get("HUMANIZER_TRAIN_N", 1200))
     n_eval_prompts: int = int(os.environ.get("HUMANIZER_EVAL_N", 30))
     min_words: int = 60
@@ -365,15 +373,13 @@ def load_detectors(cfg: Cfg):
 
 
 def detector_p_ai(detectors, texts, cfg: Cfg | None = None, pangram_api_key: str | None = None):
-    """Get p_ai per text, averaged across local detectors + (optionally) Pangram.
+    """Get p_ai per text. Local detectors get equal weight (1.0 each); Pangram,
+    when present, gets cfg.pangram_weight (default 2.0 — when Pangram fires it
+    dominates because it's the actual target).
 
     `detectors` is the list of (model, tok, ai_idx) tuples for frozen local
-    RoBERTa detectors. If pangram_api_key is provided, also queries Pangram
-    via HTTP and includes it as an equal-weight ensemble member.
-
-    Returns (aggregate_per_text, per_detector_lists). per_detector_lists
-    contains one list per detector — locals first, then "pangram" last if
-    queried — useful for telemetry / asymmetry checks.
+    detectors. Pass pangram_api_key=None for the cheap local-only path used
+    on most training steps.
     """
     import torch
     members = list(detectors)
@@ -384,12 +390,16 @@ def detector_p_ai(detectors, texts, cfg: Cfg | None = None, pangram_api_key: str
             enc = dt(texts, return_tensors="pt", truncation=True, padding=True, max_length=512).to("cuda")
             logits = d(**enc).logits.float()
             per.append(torch.softmax(logits, dim=-1)[:, ai_idx].cpu().tolist())
-    n_total = n_local
+    weights = [1.0] * n_local
     if pangram_api_key and cfg is not None:
         pgr = pangram_score_batch(texts, cfg, pangram_api_key)
         per.append(pgr)
-        n_total += 1
-    agg = [sum(per[k][i] for k in range(n_total)) / max(n_total, 1) for i in range(len(texts))]
+        weights.append(cfg.pangram_weight)
+    total_w = sum(weights) or 1.0
+    agg = [
+        sum(per[k][i] * weights[k] for k in range(len(per))) / total_w
+        for i in range(len(texts))
+    ]
     return agg, per
 
 
@@ -548,8 +558,17 @@ def train(cfg: Cfg) -> tuple[list[str], list[dict]]:
             )
         completions = [tokenizer.decode(s[prompt_len:], skip_special_tokens=True).strip() for s in seqs]
 
+        # Sparse Pangram: only call the API every Nth step. On other steps
+        # the reward comes from local detectors only — free, fast, and the
+        # primary gradient signal. The periodic Pangram steps act as
+        # ground-truth corrections that pull the policy toward the actual
+        # real-world target.
+        use_pangram_this_step = (
+            cfg.pangram_every > 0 and (step % cfg.pangram_every == 0)
+        )
         rewards, details = compute_reward(
-            cfg, sim_model, detectors, src, completions, pangram_api_key=pangram_api_key,
+            cfg, sim_model, detectors, src, completions,
+            pangram_api_key=pangram_api_key if use_pangram_this_step else None,
         )
 
         rewards_t = torch.tensor(rewards, device="cuda")
@@ -586,11 +605,13 @@ def train(cfg: Cfg) -> tuple[list[str], list[dict]]:
             "kl": float(kl.item()),
             "loss": float(loss.item()),
             "best_completion": completions[int(rewards_t.argmax())][:200],
+            "pangram": use_pangram_this_step,
             "t": round(time.time() - t0, 1),
         }
         log_lines.append(line)
+        pgr_marker = " [+pgr]" if use_pangram_this_step else ""
         print(
-            f"step {step+1:4d}/{len(train_prompts)}  "
+            f"step {step+1:4d}/{len(train_prompts)}{pgr_marker}  "
             f"R̄={line['mean_reward']:+.3f}  R_max={line['max_reward']:+.3f}  "
             f"p_ai={line['mean_p_ai']:.3f}  sim={line['mean_sim']:.3f}  "
             f"pat={line['mean_pattern']:.3f}  gated={line['n_gated']}/{cfg.num_generations}  "
