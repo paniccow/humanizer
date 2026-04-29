@@ -54,8 +54,12 @@ class Cfg:
     dataset_path: str = os.environ.get("HUMANIZER_DATASET", str(DATASET_PATH))
     n_eval_holdout: int = int(os.environ.get("HUMANIZER_EVAL_N", 100))
     epochs: int = int(os.environ.get("HUMANIZER_EPOCHS", 2))
-    batch_size: int = int(os.environ.get("HUMANIZER_BATCH", 4))
-    grad_accum: int = int(os.environ.get("HUMANIZER_GRAD_ACCUM", 2))
+    # batch=2 max for Qwen-3B SFT on 24GB. Default attempt at batch=4 OOM'd
+    # during cross-entropy because seq2seq activations are hefty: 4 × 512
+    # × 3072 hidden × 36 layers × 2 bytes ≈ 9GB just for activations.
+    # Use grad_accum=4 to keep effective batch=8.
+    batch_size: int = int(os.environ.get("HUMANIZER_BATCH", 2))
+    grad_accum: int = int(os.environ.get("HUMANIZER_GRAD_ACCUM", 4))
     learning_rate: float = float(os.environ.get("HUMANIZER_LR", 1e-4))
     lora_r: int = int(os.environ.get("HUMANIZER_LORA_R", 16))
     lora_alpha: int = int(os.environ.get("HUMANIZER_LORA_ALPHA", 32))
@@ -63,7 +67,10 @@ class Cfg:
     warmup_steps: int = int(os.environ.get("HUMANIZER_WARMUP", 50))
     save_every: int = int(os.environ.get("HUMANIZER_SAVE_EVERY", 200))
     log_every: int = int(os.environ.get("HUMANIZER_LOG_EVERY", 10))
-    max_seq_len: int = int(os.environ.get("HUMANIZER_MAX_SEQ", 512))
+    max_seq_len: int = int(os.environ.get("HUMANIZER_MAX_SEQ", 384))   # was 512; tighten to fit
+    # Gradient checkpointing trades compute for memory. ~30% slower but
+    # frees ~5-7 GB of activations. Required to fit Qwen-3B SFT on 24GB.
+    use_grad_checkpointing: bool = os.environ.get("HUMANIZER_GRAD_CKPT", "1") == "1"
     gen_temperature: float = 0.95
     gen_top_p: float = 0.95
     gen_max_new: int = 200
@@ -173,6 +180,17 @@ def train(cfg: Cfg):
     )
     model = get_peft_model(model, lora_cfg)
     model.print_trainable_parameters()
+
+    # Gradient checkpointing — required to fit batch=2+ Qwen-3B SFT on 24GB.
+    # Must be enabled AFTER PEFT wrapping; also disable use_cache (incompatible
+    # with checkpointing during training).
+    if cfg.use_grad_checkpointing:
+        model.gradient_checkpointing_enable()
+        model.config.use_cache = False
+        # PEFT requires this so gradients flow through frozen base model
+        if hasattr(model, "enable_input_require_grads"):
+            model.enable_input_require_grads()
+        print(f"[mem] gradient checkpointing enabled (saves ~5-7 GB activations)", flush=True)
 
     # Preformat all training examples once (saves CPU later)
     print(f"[data] tokenizing pairs (max_seq_len={cfg.max_seq_len})...", flush=True)
