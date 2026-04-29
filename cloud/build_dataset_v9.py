@@ -247,9 +247,22 @@ def main():
             jobs.append((i, src, h, k % len(REWRITE_PROMPTS)))
 
     out_path = os.path.expanduser(args.out)
-    written = 0
-    t0 = time.time()
-    print(f"[gen] starting AI rewrites with {args.workers} concurrent workers...")
+
+    # Resume: if file exists, skip jobs we've already done. Each pair is
+    # uniquely identified by (source, human_idx, prompt_idx).
+    done_keys: set[tuple[str, int, int]] = set()
+    if os.path.exists(out_path):
+        with open(out_path) as f:
+            for line in f:
+                try:
+                    r = json.loads(line)
+                    done_keys.add((r["source"], r["human_idx"], r["prompt_idx"]))
+                except Exception:
+                    continue
+    print(f"[resume] {len(done_keys)} pairs already in {out_path}")
+
+    pending = [j for j in jobs if (j[1], j[0], j[3]) not in done_keys]
+    print(f"[gen] {len(pending)} jobs remaining; using as_completed (no head-of-line blocking)")
 
     def one_pair(args_tuple):
         i, src, human, prompt_idx = args_tuple
@@ -259,17 +272,32 @@ def main():
         return {"ai": ai_text, "human": human, "source": src,
                 "prompt_idx": prompt_idx, "human_idx": i}
 
-    with open(out_path, "w") as f, ThreadPoolExecutor(max_workers=args.workers) as pool:
-        for j, result in enumerate(pool.map(one_pair, jobs)):
-            if result is None: continue
-            f.write(json.dumps(result) + "\n")
+    from concurrent.futures import as_completed
+    written = len(done_keys)
+    completed_now = 0
+    failed = 0
+    t0 = time.time()
+    with open(out_path, "a") as f, ThreadPoolExecutor(max_workers=args.workers) as pool:
+        futures = {pool.submit(one_pair, j): j for j in pending}
+        for fut in as_completed(futures):
+            completed_now += 1
+            try:
+                result = fut.result(timeout=200)
+            except Exception as e:
+                failed += 1; continue
+            if result is None:
+                failed += 1; continue
+            f.write(json.dumps(result) + "\n"); f.flush()
             written += 1
-            if (j + 1) % 100 == 0:
-                rate = (j + 1) / (time.time() - t0)
-                eta = (len(jobs) - j - 1) / max(rate, 0.1)
-                print(f"  [{j+1}/{len(jobs)}] {rate:.1f}/s, ETA {eta/60:.1f}m, written {written}", flush=True)
+            if completed_now % 100 == 0:
+                rate = completed_now / (time.time() - t0)
+                eta = (len(pending) - completed_now) / max(rate, 0.1)
+                print(f"  [{completed_now}/{len(pending)}] {rate:.1f}/s ETA {eta/60:.1f}m  "
+                      f"written={written} failed={failed}", flush=True)
 
-    print(f"\n[done] {written} pairs in {out_path}, elapsed {time.time()-t0:.0f}s")
+    print(f"\n[done] {written} total pairs in {out_path}, "
+          f"new this run: {completed_now-failed}, failed: {failed}, "
+          f"elapsed {time.time()-t0:.0f}s")
 
 
 if __name__ == "__main__":
