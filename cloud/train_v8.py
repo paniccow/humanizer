@@ -80,6 +80,10 @@ def format_pair(tokenizer, ai: str, human: str, max_len: int):
     """Format one (ai, human) pair with the Qwen chat template. Returns
     input_ids and labels (with everything before the assistant response
     masked to -100 so the loss only flows through the human target tokens).
+
+    Renders to string then encodes — bulletproof across transformers
+    versions. Some versions of apply_chat_template(tokenize=True) returned
+    weird types in our env, hence the explicit detour.
     """
     import torch
 
@@ -88,14 +92,17 @@ def format_pair(tokenizer, ai: str, human: str, max_len: int):
         {"role": "user", "content": ai},
         {"role": "assistant", "content": human},
     ]
-    full_ids = tokenizer.apply_chat_template(
-        msgs, tokenize=True, add_generation_prompt=False,
+    full_str = tokenizer.apply_chat_template(
+        msgs, tokenize=False, add_generation_prompt=False,
     )
+    full_ids = tokenizer.encode(full_str, add_special_tokens=False)
+
     # Compute the prompt-prefix length so we can mask labels
     prompt_msgs = msgs[:2]
-    prompt_ids = tokenizer.apply_chat_template(
-        prompt_msgs, tokenize=True, add_generation_prompt=True,
+    prompt_str = tokenizer.apply_chat_template(
+        prompt_msgs, tokenize=False, add_generation_prompt=True,
     )
+    prompt_ids = tokenizer.encode(prompt_str, add_special_tokens=False)
     prompt_len = len(prompt_ids)
 
     if len(full_ids) > max_len:
@@ -276,9 +283,10 @@ def evaluate(cfg: Cfg, model, tokenizer, eval_pairs):
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": ai},
         ]
-        ids = tokenizer.apply_chat_template(
-            msgs, tokenize=True, add_generation_prompt=True, return_tensors="pt",
-        ).cuda()
+        prompt_str = tokenizer.apply_chat_template(
+            msgs, tokenize=False, add_generation_prompt=True,
+        )
+        ids = tokenizer(prompt_str, return_tensors="pt", add_special_tokens=False).input_ids.cuda()
         # Trained output (with adapter on)
         with torch.no_grad():
             seq = model.generate(
