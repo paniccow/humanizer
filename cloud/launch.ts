@@ -85,6 +85,17 @@ async function kickOffTraining(conn: PodConnection): Promise<void> {
   await conn.run('mkdir -p /workspace/code /workspace/output');
   await conn.uploadFile(TRAIN_PY, '/workspace/code/train.py');
 
+  // Optional: upload a dataset file alongside train.py. Used by Run #8
+  // (reverse-translation SFT) which reads /workspace/code/dataset_v8.jsonl.
+  // Set HUMANIZER_DATASET_FILE to the local path, e.g. cloud/dataset_v8.jsonl
+  const datasetFile = process.env.HUMANIZER_DATASET_FILE;
+  if (datasetFile) {
+    const localPath = resolve(import.meta.dir, '..', datasetFile);
+    const remotePath = `/workspace/code/${datasetFile.split('/').pop()}`;
+    console.log(`> uploading dataset ${datasetFile} -> ${remotePath}`);
+    await conn.uploadFile(localPath, remotePath);
+  }
+
   console.log('> installing python deps (one-time)...');
   const install = await conn.run(PIP_INSTALL);
   if (install.code !== 0) throw new Error(`pip install failed (code ${install.code})`);
