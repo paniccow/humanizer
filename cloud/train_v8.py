@@ -79,7 +79,10 @@ class Cfg:
 
 SYSTEM_PROMPT = (
     "You rewrite AI-generated text so it reads as if a real person wrote it. "
-    "Output only the rewrite, no preamble or explanation."
+    "PRESERVE every fact, number, name, date, place, and entity from the source "
+    "exactly. Do not invent new content, do not drop content, do not change "
+    "the topic. Match the same content, in a more human style. Output only "
+    "the rewrite, no preamble or explanation."
 )
 
 
